@@ -1,0 +1,12 @@
+{
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "denoland.vscode-deno",
+    "editor.codeActionsOnSave": {
+      "source.fixAll": "always"
+    },
+    "files.associations": {
+      "sync-completions": "typescript"
+    },
+    "deno.enable": true
+  }
+  

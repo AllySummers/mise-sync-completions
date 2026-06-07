@@ -1,0 +1,28 @@
+{
+  "name": "@allysummers/mise-sync-completions",
+  "version": "0.0.0",
+  "license": "MIT",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "verbatimModuleSyntax": true,
+    "lib": [
+      "deno.window",
+      "es2024"
+    ]
+  },
+  "exports": "./src/cli.ts",
+  "lock": false,
+  "nodeModulesDir": "none",
+  "vendor": false,
+  "fmt": {
+    "include": [
+      "src/**/*.ts",
+      "src/sync-completions"
+    ],
+    "semiColons": true,
+    "singleQuote": true,
+    "indentWidth": 2,
+    "lineWidth": 100
+  }
+}

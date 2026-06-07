@@ -1,0 +1,8 @@
+[tools]
+deno = "2.8.2"
+
+[tasks.sync-completions]
+file = "git::https://github.com/AllySummers/mise-sync-completions//sync-completions?ref=v0.1.0"
+
+[hooks]
+postinstall = ["mise run sync-completions"]
