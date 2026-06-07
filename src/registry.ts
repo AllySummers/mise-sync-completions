@@ -86,7 +86,7 @@ export const tools: Record<string, RegistryEntry> = {
   trivy: standard,
 
   // Dev tools
-  'ast-grep': standard,
+  'ast-grep': completions,
   aube: standard,
   chezmoi: standard,
   crush: standard,
@@ -150,7 +150,10 @@ export const tools: Record<string, RegistryEntry> = {
     fish: 'sheldon completions --shell fish',
   },
   gt: {
-    aliases: ['npm:@withgraphite/cli', 'github:withgraphite/homebrew-tap'],
+    aliases: [
+      'npm:@withgraphite/graphite-cli',
+      'github:withgraphite/homebrew-tap',
+    ],
     zsh: 'gt completion',
     bash: 'gt completion',
     fish: 'gt fish',

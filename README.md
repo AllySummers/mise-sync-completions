@@ -14,11 +14,9 @@ locally.
 Add to `~/.config/mise/config.toml` (or project `mise.toml`):
 
 ```toml
-[tools]
-deno = "2.8.2"
-
 [tasks.sync-completions]
-file = "git::https://github.com/AllySummers/mise-sync-completions//sync-completions?ref=v0.1.0"
+file = "git::https://github.com/AllySummers/mise-sync-completions//src/sync-completions"
+tools.deno = "2.8.2"
 
 [hooks]
 postinstall = ["mise run sync-completions"]
@@ -31,49 +29,88 @@ not `main`.
 ### Requirements
 
 - [mise](https://mise.jdx.dev)
-- [deno](https://deno.com/) — install via mise (`deno = "2.8.2"` above)
+- [deno](https://deno.com/) — install via mise (`tools.deno = "2.8.2"` above)
 
 ### Shell wiring
 
-Completions are written to `~/.local/share/mise-completions/{zsh,bash,fish}/`.
-Source them from your shell config:
+Completions are written to:
+
+- zsh: `~/.local/share/mise-completions/zsh/`
+- fish: `~/.local/share/mise-completions/fish/`
+- bash: `~/.local/share/bash-completion/completions/` by default — the
+  [bash-completion](https://github.com/scop/bash-completion) user directory
+  (`$BASH_COMPLETION_USER_DIR/completions`, or
+  `$XDG_DATA_HOME/bash-completion/completions` when unset)
+
+Override the write directory for any shell with `--completions-path` or
+`MISE_SYNC_COMPLETIONS_PATH`.
+
+You must wire these paths into your shell so completions load. The snippets
+below follow common shell completion patterns and
+[bash-completion's installation docs](https://github.com/scop/bash-completion#installation).
 
 **zsh** (`~/.zshrc`):
 
+Add the mise completions directory to `FPATH` before `compinit`:
+
 ```zsh
-for f in ~/.local/share/mise-completions/zsh/_*; do
-  [[ -f "$f" ]] && source "$f"
-done
 fpath=(~/.local/share/mise-completions/zsh $fpath)
 autoload -Uz compinit && compinit
 ```
 
-**bash** (`~/.bashrc`):
+If completions do not appear after syncing, rebuild the zcompdump cache:
+
+```zsh
+rm -f ~/.zcompdump; compinit
+```
+
+**bash** (`~/.bashrc` or `~/.bash_profile`):
+
+First enable [bash-completion](https://github.com/scop/bash-completion). With
+the system package (common on Linux):
 
 ```bash
-for f in ~/.local/share/mise-completions/bash/*; do
+[[ $PS1 && ! ${BASH_COMPLETION_VERSINFO:-} && -f /usr/share/bash-completion/bash_completion ]] &&
+  . /usr/share/bash-completion/bash_completion
+```
+
+If you installed bash-completion via a package manager into a custom prefix,
+source its profile script instead (path varies by install):
+
+```bash
+# Example — adjust to your install location
+[[ -r /path/to/bash-completion/etc/profile.d/bash_completion.sh ]] &&
+  . /path/to/bash-completion/etc/profile.d/bash_completion.sh
+```
+
+Once bash-completion is loaded, completions in
+`~/.local/share/bash-completion/completions/` are picked up automatically on
+tab (lazy-loaded per command). No extra sourcing loop is needed.
+
+Without bash-completion, source them explicitly:
+
+```bash
+for f in ~/.local/share/bash-completion/completions/*; do
   [[ -f "$f" ]] && source "$f"
 done
 ```
 
 **fish** (`~/.config/fish/config.fish`):
 
+Add the mise completions directory to `fish_complete_path`:
+
 ```fish
-for f in ~/.local/share/mise-completions/fish/*.fish
-  if test -f $f
-    source $f
-  end
-end
+set -p fish_complete_path ~/.local/share/mise-completions/fish
 ```
 
 ### Run manually
 
 ```bash
 mise run sync-completions              # sync for $SHELL
-mise run sync-completions -- --shell zsh
-mise run sync-completions -- --force   # regenerate all
-mise run sync-completions -- --verbose # per-tool status
-mise run sync-completions -- --print-path
+mise run sync-completions --shell zsh
+mise run sync-completions --force   # regenerate all
+mise run sync-completions --verbose # per-tool status
+mise run sync-completions --print-path
 ```
 
 ## How it works
@@ -85,11 +122,11 @@ mise run sync-completions -- --print-path
 4. Looks up the tool in the **registry** — runs a shell command, or calls a handler
    (e.g. qsv via HTTP fetch, hyperfine/killport from bundled files)
 5. Writes files:
-   - zsh: `_tool`
-   - fish: `tool.fish`
-   - bash: `tool`
+   - zsh: `mise-completions/zsh/_tool`
+   - fish: `mise-completions/fish/tool.fish`
+   - bash: `bash-completion/completions/tool` (or `--completions-path`)
 
-State and output live in `~/.local/share/mise-completions/`.
+State lives in `~/.local/share/mise-completions/.state.json`.
 
 ## Registry overrides
 
@@ -163,7 +200,7 @@ If you previously vendored completion-sync inside chezmoi:
 2. Replace `[task_config] includes = ["tasks"]` hook with the remote task
    snippet above
 3. Remove `mise-completions-sync` from your tools if installed
-4. Keep shell sourcing of `~/.local/share/mise-completions/` unchanged
+4. Remove old shell wiring; add `fpath` (zsh), `fish_complete_path` (fish), and ensure bash-completion is loaded (bash)
 
 ### What changed from the chezmoi version
 

@@ -187,6 +187,20 @@ const runCommand = async (cmd: string, miseTool: string): Promise<string | null>
 
 const isCommandFn = (entry: RegistryEntry): entry is CommandFn => typeof entry === 'function';
 
+const supportsShell = (
+  entry: RegistryEntry,
+  shell: Shell,
+  tool: MiseToolInfo,
+): boolean => {
+  if (isRegistryHandlerEntry(entry)) {
+    return true;
+  }
+  if (isCommandFn(entry)) {
+    return entry(tool)[shell] !== undefined;
+  }
+  return entry[shell] !== undefined;
+};
+
 const resolveCompletion = async (
   syncName: string,
   info: MiseToolInfo,
@@ -238,11 +252,10 @@ const writeCompletion = async (
   tool: string,
   shell: Shell,
   content: string,
-  baseDir: string,
+  completionsPath: string,
 ): Promise<void> => {
-  const dir = join(baseDir, shell);
-  await Deno.mkdir(dir, { recursive: true });
-  await Deno.writeTextFile(join(dir, completionFile(tool, shell)), content);
+  await Deno.mkdir(completionsPath, { recursive: true });
+  await Deno.writeTextFile(join(completionsPath, completionFile(tool, shell)), content);
 };
 
 export const cli = async ({
@@ -297,6 +310,11 @@ export const cli = async ({
 
       if (shouldSkipEntry(entry, enableHttpCompletions, enableBundledCompletions)) {
         log(`  no-cmd ${syncName} (${shell})`);
+        return null;
+      }
+
+      if (!supportsShell(entry, shell, info)) {
+        log(`  no-shell ${syncName} (${shell})`);
         return null;
       }
 

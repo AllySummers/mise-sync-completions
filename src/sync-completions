@@ -1,13 +1,15 @@
 #!/usr/bin/env -S deno run --allow-env --allow-run --allow-read --allow-write --allow-net --allow-sys
 //MISE description="Sync shell completions for all installed mise tools"
-//USAGE flag "--force -f" help="Regenerate all completions regardless of cached version"
-//USAGE flag "--verbose -v" help="Print per-tool status"
-//USAGE flag "--http-completions" help="Fetch completions from HTTP (e.g. qsv)" negate="--no-http-completions" default=#true
-//USAGE flag "--bundled-completions" help="Read completions bundled with tools (e.g. hyperfine)" negate="--no-bundled-completions" default=#true
+//USAGE flag "--force -f" help="Regenerate all completions regardless of cached version" env="MISE_SYNC_COMPLETIONS_FORCE"
+//USAGE flag "--verbose -v" help="Print per-tool status" env="MISE_SYNC_COMPLETIONS_VERBOSE"
+//USAGE flag "--http-completions" help="Allow fetching completions from HTTP (e.g. qsv)" negate="--no-http-completions" default=#true env="MISE_SYNC_COMPLETIONS_HTTP_COMPLETIONS"
+//USAGE flag "--bundled-completions" help="Allow reading completions bundled with tools (e.g. hyperfine)" negate="--no-bundled-completions" default=#true env="MISE_SYNC_COMPLETIONS_BUNDLED_COMPLETIONS"
 //USAGE flag "--disable <tools>" help="Skip completion sync for specific tools" var=#true
 //USAGE flag "--registry <path>" help="Path to user registry override file (.ts)" env="MISE_SYNC_COMPLETIONS_REGISTRY" default="~/.config/mise/sync-completions/registry.ts"
-//USAGE flag "--print-path" help="Print the completions directory path and exit"
-//USAGE flag "--shell <shell>" help="Limit sync to a specific shell" {
+//USAGE flag "--print-path" help="Print the completions directory path for the active shell and exit"
+//USAGE flag "--completions-path <path>" help="Directory to write completions (default under XDG_DATA_HOME; see README)" env="MISE_SYNC_COMPLETIONS_PATH"
+//USAGE flag "--shell <shell>" env="MISE_SYNC_COMPLETIONS_SHELL" {
+//USAGE   help "Override the shell to sync completions for"
 //USAGE   choices "zsh" "bash" "fish"
 //USAGE }
 
@@ -16,16 +18,17 @@ import { homedir } from 'node:os';
 import { cli } from './cli.ts';
 import { type Shell, VALID_SHELLS } from './shared.ts';
 
-const completionsPath = join(homedir(), '.local', 'share', 'mise-completions');
-
 const expandHome = (path: string) => path.startsWith('~/') ? join(homedir(), path.slice(2)) : path;
+const dataHome = () => Deno.env.get('XDG_DATA_HOME') ?? join(homedir(), '.local', 'share');
+
+const defaultCompletionsPath = (shell: Shell): string => {
+  if (shell === 'bash') {
+    return join(dataHome(), 'bash-completion', 'completions');
+  }
+  return join(dataHome(), 'mise-completions', shell);
+};
 
 const registryPath = expandHome(Deno.env.get('usage_registry')!);
-
-if (Deno.env.get('usage_print_path') === 'true') {
-  console.log(completionsPath);
-  Deno.exit(0);
-}
 
 const rawShell = Deno.env.get('usage_shell') || Deno.env.get('SHELL')?.split('/').at(-1);
 if (!rawShell || !VALID_SHELLS.includes(rawShell as Shell)) {
@@ -34,8 +37,21 @@ if (!rawShell || !VALID_SHELLS.includes(rawShell as Shell)) {
   );
 }
 
+const shell = rawShell as Shell;
+
+const completionsPath = expandHome(
+  Deno.env.get('usage_completions_path') ??
+    Deno.env.get('MISE_SYNC_COMPLETIONS_PATH') ??
+    defaultCompletionsPath(shell),
+);
+
+if (Deno.env.get('usage_print_path') === 'true') {
+  console.log(completionsPath);
+  Deno.exit(0);
+}
+
 await cli({
-  statePath: join(completionsPath, '.state.json'),
+  statePath: join(dataHome(), 'mise-completions', '.state.json'),
   completionsPath,
   registryPath,
   force: Deno.env.get('usage_force') === 'true',
@@ -43,5 +59,5 @@ await cli({
   enableHttpCompletions: Deno.env.get('usage_http_completions') === 'true',
   enableBundledCompletions: Deno.env.get('usage_bundled_completions') === 'true',
   disabledTools: (Deno.env.get('usage_disable') ?? '').split(/\s+/).filter(Boolean),
-  shell: rawShell as Shell,
+  shell,
 });

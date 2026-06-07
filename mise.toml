@@ -1,0 +1,4 @@
+min_version = "2026.6.1"
+
+[tools]
+deno = "2.8.2"

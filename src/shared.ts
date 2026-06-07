@@ -36,6 +36,7 @@ export interface RegistryModule {
 
 export interface CLIOptions {
   statePath: string;
+  /** Resolved directory to write completions for the active shell. */
   completionsPath: string;
   registryPath: string;
   force?: boolean;
