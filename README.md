@@ -1,0 +1,1 @@
+# mise-sync-completions
