@@ -17,6 +17,7 @@ Add to `~/.config/mise/config.toml` (or project `mise.toml`):
 [tasks.sync-completions]
 file = "git::https://github.com/AllySummers/mise-sync-completions//src/sync-completions"
 tools.deno = "2.8.2"
+tools.usage = "3.4.0" # or "latest", since mise/etc can require new versions of `usage` for new features in completions
 
 [hooks]
 postinstall = ["mise run sync-completions"]
