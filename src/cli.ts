@@ -264,6 +264,7 @@ export const cli = async ({
   registryPath,
   force = false,
   verbose = false,
+  quiet = false,
   shell,
   enableHttpCompletions = true,
   enableBundledCompletions = true,
@@ -355,5 +356,7 @@ export const cli = async ({
   if (count('failed')) {
     parts.push(`failed: ${count('failed')}`);
   }
-  console.log(`sync-completions: ${parts.join(', ')}`);
+  if (!quiet || verbose) {
+    console.log(`sync-completions: ${parts.join(', ')}`);
+  }
 };

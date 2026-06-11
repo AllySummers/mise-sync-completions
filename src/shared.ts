@@ -41,6 +41,7 @@ export interface CLIOptions {
   registryPath: string;
   force?: boolean;
   verbose?: boolean;
+  quiet?: boolean;
   shell: Shell;
   enableHttpCompletions?: boolean;
   enableBundledCompletions?: boolean;

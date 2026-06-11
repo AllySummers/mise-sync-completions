@@ -7,6 +7,10 @@
     "files.associations": {
       "sync-completions": "typescript"
     },
-    "deno.enable": true
+    "deno.enable": true,
+    "debug.javascript.defaultRuntimeExecutable": {
+      "pwa-node": "/Users/Ally/.local/share/mise/shims/node"
+    },
+    "deno.path": "/Users/Ally/.local/share/mise/shims/deno"
   }
   

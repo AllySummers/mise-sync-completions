@@ -2,6 +2,7 @@
 //MISE description="Sync shell completions for all installed mise tools"
 //USAGE flag "--force -f" help="Regenerate all completions regardless of cached version" env="MISE_SYNC_COMPLETIONS_FORCE"
 //USAGE flag "--verbose -v" help="Print per-tool status" env="MISE_SYNC_COMPLETIONS_VERBOSE"
+//USAGE flag "--quiet -q" help="Hide all output except errors" env="MISE_SYNC_COMPLETIONS_QUIET"
 //USAGE flag "--http-completions" help="Allow fetching completions from HTTP (e.g. qsv)" negate="--no-http-completions" default=#true env="MISE_SYNC_COMPLETIONS_HTTP_COMPLETIONS"
 //USAGE flag "--bundled-completions" help="Allow reading completions bundled with tools (e.g. hyperfine)" negate="--no-bundled-completions" default=#true env="MISE_SYNC_COMPLETIONS_BUNDLED_COMPLETIONS"
 //USAGE flag "--disable <tools>" help="Skip completion sync for specific tools" var=#true
@@ -56,6 +57,7 @@ await cli({
   registryPath,
   force: Deno.env.get('usage_force') === 'true',
   verbose: Deno.env.get('usage_verbose') === 'true',
+  quiet: Deno.env.get('usage_quiet') === 'true',
   enableHttpCompletions: Deno.env.get('usage_http_completions') === 'true',
   enableBundledCompletions: Deno.env.get('usage_bundled_completions') === 'true',
   disabledTools: (Deno.env.get('usage_disable') ?? '').split(/\s+/).filter(Boolean),
