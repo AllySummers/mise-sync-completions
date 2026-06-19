@@ -158,6 +158,11 @@ export const tools: Record<string, RegistryEntry> = {
     bash: 'gt completion',
     fish: 'gt fish',
   },
+  'github:git-town/git-town': {
+    zsh: 'git-town completions zsh',
+    bash: 'git-town completions bash',
+    fish: 'git-town completions fish',
+  },
   fx: {
     zsh: 'fx --comp zsh',
     bash: 'fx --comp bash',
