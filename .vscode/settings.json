@@ -11,6 +11,7 @@
     "debug.javascript.defaultRuntimeExecutable": {
       "pwa-node": "/Users/Ally/.local/share/mise/shims/node"
     },
-    "deno.path": "/Users/Ally/.local/share/mise/shims/deno"
+    "deno.path": "/Users/Ally/.local/share/mise/shims/deno",
+    "oxc.path.node": "/Users/Ally/.local/share/mise/shims/node"
   }
   

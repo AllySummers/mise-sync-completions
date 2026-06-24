@@ -71,6 +71,7 @@ export const tools: Record<string, RegistryEntry> = {
   flyctl: standard,
   doctl: standard,
   oci: standard,
+  supabase: completionsFlag,
 
   // Container tools
   cosign: standard,
