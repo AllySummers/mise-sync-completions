@@ -5,6 +5,12 @@ export interface RegistryMetadata {
   providedBy?: string;
   /** Other mise tool names that use this registry entry. */
   aliases?: string[];
+  /** Additional mise tools that must be on PATH while generating the completion. */
+  requires?: string | string[];
+  /** Binary name used for the generated completion filename (for backend-qualified tools). */
+  completionName?: string;
+  /** Shells supported by a handler entry. Command entries express this through their keys. */
+  shells?: Shell[];
 }
 
 export type ShellCommandsEntry = ShellCommands & RegistryMetadata;

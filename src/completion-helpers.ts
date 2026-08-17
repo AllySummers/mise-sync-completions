@@ -1,6 +1,19 @@
 import { join } from 'node:path';
 import type { Shell } from './shared.ts';
 
+export const runMiseCommand = async (
+  miseTool: string,
+  command: string[],
+): Promise<string | null> => {
+  const result = await new Deno.Command('mise', {
+    args: ['x', miseTool, '--', ...command],
+    stdout: 'piped',
+    stderr: 'null',
+  }).output();
+  const output = new TextDecoder().decode(result.stdout);
+  return result.success && output.trim() ? output : null;
+};
+
 const matchGlobPrefix = (name: string, pattern: string): boolean => {
   const prefix = pattern.replace(/\*.*$/, '');
   return name.startsWith(prefix);

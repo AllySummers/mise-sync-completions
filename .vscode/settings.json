@@ -12,6 +12,7 @@
       "pwa-node": "/Users/Ally/.local/share/mise/shims/node"
     },
     "deno.path": "/Users/Ally/.local/share/mise/shims/deno",
-    "oxc.path.node": "/Users/Ally/.local/share/mise/shims/node"
+    "oxc.path.node": "/Users/Ally/.local/share/mise/shims/node",
+    "js/ts.experimental.useTsgo": false
   }
   

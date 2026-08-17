@@ -1,11 +1,19 @@
-import { fetchHttpCompletion, githubRawUrls, readBundledCompletion } from './completion-helpers.ts';
 import {
+  fetchHttpCompletion,
+  githubRawUrls,
+  readBundledCompletion,
+  runMiseCommand,
+} from './completion-helpers.ts';
+import {
+  argcomplete,
   completions,
   completionsFlag,
   genCompletions,
+  generateComplete,
   generateShell,
   ghStyle,
   standard,
+  standardCommands,
 } from './presets.ts';
 import type { MiseToolInfo, RegistryEntry, Shell } from './shared.ts';
 
@@ -25,6 +33,8 @@ export const tools: Record<string, RegistryEntry> = {
   glab: ghStyle,
 
   // Kubernetes ecosystem
+  clusterctl: standard,
+  cmctl: standard,
   k9s: standard,
   kind: standard,
   'kubectl-ai': standard,
@@ -56,7 +66,7 @@ export const tools: Record<string, RegistryEntry> = {
   },
   ruff: generateShell,
   ty: generateShell,
-  mdbook: generateShell,
+  mdbook: completions,
   atuin: genCompletions,
   gitu: genCompletions,
   gitui: genCompletions,
@@ -65,12 +75,15 @@ export const tools: Record<string, RegistryEntry> = {
   usage: completionsFlag,
 
   // Python tools
+  ipython: argcomplete('ipython'),
+  patool: argcomplete('patool'),
   poetry: completions,
+  ratarmount: argcomplete('ratarmount'),
+  pdm: standard,
 
   // Cloud CLIs
   flyctl: standard,
   doctl: standard,
-  oci: standard,
   supabase: completionsFlag,
 
   // Container tools
@@ -95,31 +108,53 @@ export const tools: Record<string, RegistryEntry> = {
   dagger: standard,
   doggo: completions,
   dyff: standard,
-  fnox: standard,
+  ghorg: standard,
   gitleaks: standard,
+  glow: standard,
   'golangci-lint': standard,
   goreleaser: standard,
-  hk: standard,
+  grafanactl: {
+    ...standardCommands('grafanactl'),
+    aliases: ['aqua:grafana/grafanactl'],
+    completionName: 'grafanactl',
+  },
+  hishtory: standard,
+  'asdf-hishtory': {
+    ...standardCommands('hishtory'),
+    completionName: 'hishtory',
+  },
   hugo: standard,
+  jules: standard,
   lazygit: standard,
   lefthook: standard,
+  'mermaid-ascii': standard,
   oc: standard,
-  pitchfork: standard,
+  opencode: standard,
   pulumi: standard,
-  restic: standard,
   rumdl: completions,
-  saml2aws: standard,
   step: standard,
-  xh: standard,
+  xh: generateComplete,
   yq: standard,
+  whosthere: {
+    ...standardCommands('whosthere'),
+    aliases: ['github:ramonvermeulen/whosthere'],
+    completionName: 'whosthere',
+  },
 
   // Explicit or partial shell support
+  'mise-completions-sync': {
+    ...standardCommands('misecompsync'),
+    aliases: ['github:alltuner/mise-completions-sync'],
+    completionName: 'misecompsync',
+  },
   bun: {
     zsh: 'bun completions',
     bash: 'bun completions',
     fish: 'bun completions',
   },
   npm: {
+    aliases: ['aqua:npm/cli'],
+    completionName: 'npm',
     zsh: 'npm completion',
     bash: 'npm completion',
   },
@@ -135,14 +170,22 @@ export const tools: Record<string, RegistryEntry> = {
     zsh: 'sops completion zsh',
     bash: 'sops completion bash',
   },
+  oci: {
+    zsh: 'env _OCI_COMPLETE=zsh_source oci',
+    bash: 'env _OCI_COMPLETE=bash_source oci',
+    fish: 'env _OCI_COMPLETE=fish_source oci',
+  },
+  saml2aws: {
+    zsh: 'saml2aws --completion-script-zsh',
+    bash: 'saml2aws --completion-script-bash',
+  },
   cargo: {
     zsh: 'rustup completions zsh cargo',
     bash: 'rustup completions bash cargo',
     fish: 'rustup completions fish cargo',
   },
   pipx: {
-    zsh: 'register-python-argcomplete pipx',
-    bash: 'register-python-argcomplete pipx',
+    ...argcomplete('pipx'),
   },
   node: { bash: 'node --completion-bash' },
   sheldon: {
@@ -155,14 +198,52 @@ export const tools: Record<string, RegistryEntry> = {
       'npm:@withgraphite/graphite-cli',
       'github:withgraphite/homebrew-tap',
     ],
+    completionName: 'gt',
     zsh: 'gt completion',
     bash: 'gt completion',
     fish: 'gt fish',
   },
   'github:git-town/git-town': {
+    completionName: 'git-town',
     zsh: 'git-town completions zsh',
     bash: 'git-town completions bash',
     fish: 'git-town completions fish',
+  },
+  fnox: {
+    ...standardCommands('fnox'),
+    requires: 'usage',
+  },
+  hk: {
+    ...standardCommands('hk'),
+    requires: 'usage',
+  },
+  pitchfork: {
+    ...standardCommands('pitchfork'),
+    requires: 'usage',
+  },
+  codex: standard,
+  caddy: standard,
+  'github:microsoft/apm': {
+    completionName: 'apm',
+    zsh: 'env _APM_COMPLETE=zsh_source apm',
+    bash: 'env _APM_COMPLETE=bash_source apm',
+    fish: 'env _APM_COMPLETE=fish_source apm',
+  },
+  'github:KarnerTh/mermerd': {
+    ...standardCommands('mermerd'),
+    completionName: 'mermerd',
+  },
+  'npm:neon': {
+    completionName: 'neon',
+    shells: ['zsh'],
+    handler: async (tool) => {
+      const completion = await runMiseCommand(tool.name, ['neon', 'completion']);
+      return completion?.replaceAll('neonctl', 'neon') ?? null;
+    },
+  },
+  flux2: {
+    ...standardCommands('flux'),
+    completionName: 'flux',
   },
   fx: {
     zsh: 'fx --comp zsh',
@@ -173,6 +254,24 @@ export const tools: Record<string, RegistryEntry> = {
     zsh: 'pkl shell-completion zsh',
     bash: 'pkl shell-completion bash',
     fish: 'pkl shell-completion fish',
+  },
+  television: {
+    completionName: 'tv',
+    zsh: 'tv init zsh',
+    bash: 'tv init bash',
+    fish: 'tv init fish',
+  },
+  jj: {
+    zsh: 'jj util completion zsh',
+    bash: 'jj util completion bash',
+    fish: 'jj util completion fish',
+  },
+  openspec: {
+    aliases: ['npm:@fission-ai/openspec'],
+    completionName: 'openspec',
+    zsh: 'openspec completion generate zsh',
+    bash: 'openspec completion generate bash',
+    fish: 'openspec completion generate fish',
   },
   prek: {
     zsh: 'prek util generate-shell-completion zsh',
@@ -204,6 +303,16 @@ export const tools: Record<string, RegistryEntry> = {
     bash: 'zellij setup --generate-completion bash',
     fish: 'zellij setup --generate-completion fish',
   },
+  restic: {
+    zsh: 'restic generate --zsh-completion -',
+    bash: 'restic generate --bash-completion -',
+    fish: 'restic generate --fish-completion -',
+  },
+  rclone: {
+    zsh: 'rclone completion zsh -',
+    bash: 'rclone completion bash -',
+    fish: 'rclone completion fish -',
+  },
   'scaleway-cli': {
     zsh: 'scw autocomplete script shell=zsh',
     bash: 'scw autocomplete script shell=bash',
@@ -211,6 +320,7 @@ export const tools: Record<string, RegistryEntry> = {
   },
   rg: {
     aliases: ['ripgrep'],
+    completionName: 'rg',
     zsh: 'rg --generate complete-zsh',
     bash: 'rg --generate complete-bash',
     fish: 'rg --generate complete-fish',
@@ -219,6 +329,11 @@ export const tools: Record<string, RegistryEntry> = {
     zsh: 'tree-sitter complete --shell zsh',
     bash: 'tree-sitter complete --shell bash',
     fish: 'tree-sitter complete --shell fish',
+  },
+  nix: {
+    zsh: 'nix --extra-experimental-features nix-command completion zsh',
+    bash: 'nix --extra-experimental-features nix-command completion bash',
+    fish: 'nix --extra-experimental-features nix-command completion fish',
   },
 
   // External tools

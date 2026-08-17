@@ -147,7 +147,7 @@ User entries are **merged on top** of built-in defaults.
 Example override:
 
 ```ts
-import { standard } from "https://raw.githubusercontent.com/AllySummers/mise-sync-completions/v0.1.0/presets.ts";
+import { standard, standardCommands } from "https://raw.githubusercontent.com/AllySummers/mise-sync-completions/v0.1.0/presets.ts";
 import type { RegistryEntry } from "https://raw.githubusercontent.com/AllySummers/mise-sync-completions/v0.1.0/shared.ts";
 
 export const tools: Record<string, RegistryEntry> = {
@@ -161,6 +161,23 @@ For handlers that fetch remote files or read bundled completions, use a
 in [`registry.ts`](registry.ts)). For one-off user logic, vendor this repo and
 edit [`custom-completions.ts`](src/custom-completions.ts) — it is merged last
 and starts empty.
+
+Object entries can also use registry metadata when a mise tool name differs
+from its binary or needs another tool during generation:
+
+```ts
+export const tools: Record<string, RegistryEntry> = {
+  "github:owner/example": {
+    ...standardCommands("example"),
+    completionName: "example",
+    requires: "usage",
+  },
+};
+```
+
+Use `aliases` when multiple mise tool names install the same binary, `providedBy`
+when one installed tool provides an additional binary, and `shells` to limit a
+handler entry to the shells it supports.
 
 ## Upgrading
 
@@ -211,7 +228,7 @@ If you previously vendored completion-sync inside chezmoi:
 | Registry              | `registry.toml` + pattern indirection       | `presets.ts` + `registry.ts` (`tools` only)   |
 | qsv                   | curl commands in registry                   | `registry.ts` handler (HTTP fetch)            |
 | hyperfine / killport  | not supported                               | `registry.ts` handlers (bundled files)        |
-| mise-completions-sync | registry entry                              | removed (this replaces it)                    |
+| mise-completions-sync | registry entry                              | retained for compatibility; this replaces it  |
 | Overrides             | edit chezmoi files                          | `~/.config/mise/sync-completions/registry.ts` |
 | Imports               | `../completion-sync/cli.ts`                 | sibling `./cli.ts` in flat repo layout        |
 

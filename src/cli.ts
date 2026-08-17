@@ -29,6 +29,7 @@ interface RegistryIndex {
 
 interface SyncTarget {
   syncName: string;
+  completionName: string;
   info: MiseToolInfo;
   entry: RegistryEntry;
 }
@@ -127,7 +128,8 @@ const buildSyncTargets = (
       continue;
     }
     seen.add(name);
-    targets.push({ syncName: name, info: { ...info, name }, entry });
+    const completionName = typeof entry === 'object' ? entry.completionName ?? name : name;
+    targets.push({ syncName: name, completionName, info: { ...info, name }, entry });
   }
 
   for (const { name, providedBy, entry } of index.providedBy) {
@@ -138,6 +140,7 @@ const buildSyncTargets = (
     seen.add(name);
     targets.push({
       syncName: name,
+      completionName: typeof entry === 'object' ? entry.completionName ?? name : name,
       info: { ...provider, name: provider.name },
       entry,
     });
@@ -176,12 +179,12 @@ const shouldSkipEntry = (
 };
 
 /** Registry command strings are split on whitespace into argv; use a handler for shell syntax or quoted args. */
-const runCommand = async (cmd: string, miseTool: string): Promise<string | null> => {
+const runCommand = async (cmd: string, miseTools: string[]): Promise<string | null> => {
   const [bin, ...args] = cmd.split(/\s+/);
   if (!bin) {
     return null;
   }
-  const { out, ok } = await exec(['mise', 'x', miseTool, '--', bin, ...args]);
+  const { out, ok } = await exec(['mise', 'x', ...miseTools, '--', bin, ...args]);
   return ok && out.trim() ? out : null;
 };
 
@@ -193,7 +196,7 @@ const supportsShell = (
   tool: MiseToolInfo,
 ): boolean => {
   if (isRegistryHandlerEntry(entry)) {
-    return true;
+    return entry.shells?.includes(shell) ?? true;
   }
   if (isCommandFn(entry)) {
     return entry(tool)[shell] !== undefined;
@@ -208,7 +211,11 @@ const resolveCompletion = async (
   entry: RegistryEntry,
 ): Promise<string | null> => {
   const tool: MiseToolInfo = { ...info, name: syncName };
-  const miseTool = typeof entry === 'object' && entry.providedBy ? entry.providedBy : syncName;
+  const provider = typeof entry === 'object' && entry.providedBy ? entry.providedBy : syncName;
+  const requirements = typeof entry === 'object'
+    ? Array.isArray(entry.requires) ? entry.requires : entry.requires ? [entry.requires] : []
+    : [];
+  const miseTools = [provider, ...requirements.filter((name) => name !== provider)];
 
   if (isRegistryHandlerEntry(entry)) {
     return await entry.handler(tool, shell);
@@ -216,11 +223,11 @@ const resolveCompletion = async (
 
   if (isCommandFn(entry)) {
     const cmd = entry(tool)[shell];
-    return cmd ? await runCommand(cmd, miseTool) : null;
+    return cmd ? await runCommand(cmd, miseTools) : null;
   }
 
   const cmd = entry[shell];
-  return cmd ? await runCommand(cmd, miseTool) : null;
+  return cmd ? await runCommand(cmd, miseTools) : null;
 };
 
 const discoverTools = async (): Promise<Record<string, MiseToolInfo>> => {
@@ -297,9 +304,12 @@ export const cli = async ({
   };
 
   const statuses = await Promise.all(
-    syncTargets.map(async ({ syncName, info, entry }) => {
+    syncTargets.map(async ({ syncName, completionName, info, entry }) => {
       const provider = typeof entry === 'object' ? entry.providedBy : undefined;
-      if (disabled.has(syncName) || (provider && disabled.has(provider))) {
+      if (
+        disabled.has(syncName) || disabled.has(completionName) ||
+        (provider && disabled.has(provider))
+      ) {
         log(`  disable ${syncName}`);
         return null;
       }
@@ -337,9 +347,9 @@ export const cli = async ({
         return fail(syncName, false);
       }
 
-      await writeCompletion(syncName, shell, content, completionsPath);
+      await writeCompletion(completionName, shell, content, completionsPath);
       log(
-        `  wrote  ${syncName}@${info.version} → ${shell}/${completionFile(syncName, shell)}`,
+        `  wrote  ${syncName}@${info.version} → ${shell}/${completionFile(completionName, shell)}`,
       );
       state.tools[syncName] = info.version;
       return 'updated' as const;
