@@ -209,6 +209,28 @@ export const tools: Record<string, RegistryEntry> = {
     bash: 'git-town completions bash',
     fish: 'git-town completions fish',
   },
+  'github:abhinav/git-spice': {
+    completionName: 'git-spice',
+    shells: ['zsh', 'bash', 'fish'],
+    handler: async (tool, shell) => {
+      const completion = await runMiseCommand(tool.name, [
+        'git-spice',
+        'shell',
+        'completion',
+        shell,
+      ]);
+      if (!completion || shell !== 'zsh') {
+        return completion;
+      }
+
+      // The zsh generator emits an rc-file registration, not an fpath function.
+      const wrapped = completion.replace(
+        /^complete (-C .+) git-spice$/m,
+        '_bash_complete $1',
+      );
+      return wrapped === completion ? null : `#compdef git-spice\n${wrapped}`;
+    },
+  },
   fnox: {
     ...standardCommands('fnox'),
     requires: 'usage',
