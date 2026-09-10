@@ -84,7 +84,10 @@ export const tools: Record<string, RegistryEntry> = {
   // Cloud CLIs
   flyctl: standard,
   doctl: standard,
-  railway: standard,
+  railway: {
+    ...standardCommands('railway'),
+    aliases: ['github:railwayapp/cli'],
+  },
   supabase: completionsFlag,
 
   // Container tools
