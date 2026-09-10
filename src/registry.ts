@@ -84,6 +84,7 @@ export const tools: Record<string, RegistryEntry> = {
   // Cloud CLIs
   flyctl: standard,
   doctl: standard,
+  railway: standard,
   supabase: completionsFlag,
 
   // Container tools
