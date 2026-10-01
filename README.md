@@ -4,6 +4,12 @@ Sync shell completions for tools managed by [mise](https://mise.jdx.dev).
 Discovers globally installed tools, runs each tool's completion command (or a
 custom handler), and writes completion scripts to a shared directory.
 
+Tools installed through [packslip](https://mise.jdx.dev/dev-tools/backends/packslip.html)
+that ship their own completion are left to mise, which
+[loads them natively](https://mise.jdx.dev/dev-tools/packslip-resources.html#completions)
+in an activated shell. This task only maintains fallback files for everything
+else.
+
 Replaces
 [mise-completions-sync](https://github.com/alltuner/mise-completions-sync) with
 a Deno-based remote mise task and a TypeScript registry you can override
@@ -27,24 +33,78 @@ Pin to a
 [release tag](https://github.com/AllySummers/mise-sync-completions/releases),
 not `main`.
 
+The postinstall hook keeps the fallback files current and reconciles files
+whose tool now has a native packslip completion. Native completions are not
+regenerated on tool updates: mise resolves them for the active version every
+time you press Tab.
+
 ### Requirements
 
-- [mise](https://mise.jdx.dev)
+- [mise](https://mise.jdx.dev) **2026.9.17** or newer. The packslip detection
+  reads mise's install layout as of that release, and the task refuses to run
+  on older versions.
 - [deno](https://deno.com/) — install via mise (`tools.deno = "2.8.2"` above)
 
 ### Shell wiring
 
-Completions are written to:
+There are two providers, and most setups use both:
 
-- zsh: `~/.local/share/mise-completions/zsh/`
-- fish: `~/.local/share/mise-completions/fish/`
-- bash: `~/.local/share/bash-completion/completions/` by default — the
-  [bash-completion](https://github.com/scop/bash-completion) user directory
-  (`$BASH_COMPLETION_USER_DIR/completions`, or
-  `$XDG_DATA_HOME/bash-completion/completions` when unset)
+1. **Native packslip completions**, loaded by mise itself. Nothing is written
+   by this task.
+2. **Fallback files** that this task generates for every other tool.
 
-Override the write directory for any shell with `--completions-path` or
-`MISE_SYNC_COMPLETIONS_PATH`.
+#### Native packslip completions
+
+[Activate mise](https://mise.jdx.dev/cli/activate.html) in your interactive
+shell. As tools become active, activation registers mise's loaders and
+restores any earlier registration when a tool leaves scope. No extra
+completion directory is needed. `mise` must already be on `PATH` when the
+activation line runs.
+
+```zsh
+# ~/.zshrc: after the last compinit, so nothing later overwrites the loaders
+eval "$(mise activate zsh)"
+```
+
+```bash
+# ~/.bashrc
+eval "$(mise activate bash)"
+```
+
+```fish
+# ~/.config/fish/config.fish
+mise activate fish | source
+```
+
+**Shells without activation** (shims only) need a persistent loader per
+executable. Install only the ones you want, and follow the setup lines your
+mise version prints:
+
+```sh
+mise completion zsh --tool hk --install   # or bash / fish
+```
+
+Use the executable name (for example `aubr`), not a backend identifier. Avoid
+`--force`, which overwrites a completion file mise did not write.
+`--completions-path` does not affect mise's installer. Don't run `--install`
+from a postinstall hook: activated shells don't need it.
+
+This task always skips a tool when the installed version's packslip provides
+that executable's completion for the shell being synced. Without activation
+or installed loaders, such tools have no completion.
+
+#### Fallback files
+
+Fallback completions are written to:
+
+- zsh: `$XDG_DATA_HOME/mise-completions/zsh/`
+- fish: `$XDG_DATA_HOME/mise-completions/fish/`
+- bash: the [bash-completion](https://github.com/scop/bash-completion) user
+  directory, `$BASH_COMPLETION_USER_DIR/completions` (first entry when it is a
+  `:`-separated list), else `$XDG_DATA_HOME/bash-completion/completions`
+
+`$XDG_DATA_HOME` defaults to `~/.local/share`. Override the write directory for
+any shell with `--completions-path` or `MISE_SYNC_COMPLETIONS_PATH`.
 
 You must wire these paths into your shell so completions load. The snippets
 below follow common shell completion patterns and
@@ -59,10 +119,13 @@ fpath=(~/.local/share/mise-completions/zsh $fpath)
 autoload -Uz compinit && compinit
 ```
 
-If completions do not appear after syncing, rebuild the zcompdump cache:
+If completions do not appear after syncing, delete the completion dump your
+`compinit` uses and start a new shell. That is `~/.zcompdump` by default, or
+whatever file your configuration passes to `compinit -d`:
 
 ```zsh
-rm -f ~/.zcompdump; compinit
+rm -f ~/.zcompdump   # or your configured dump file
+exec zsh
 ```
 
 **bash** (`~/.bashrc` or `~/.bash_profile`):
@@ -109,30 +172,76 @@ set -p fish_complete_path ~/.local/share/mise-completions/fish
 ```bash
 mise run sync-completions              # sync for $SHELL
 mise run sync-completions --shell zsh
-mise run sync-completions --force   # regenerate all
+mise run sync-completions --force   # regenerate all fallback files
 mise run sync-completions --verbose # per-tool status
 mise run sync-completions --print-path
 ```
 
 ## How it works
 
-1. Lists globally installed tools via `mise ls --global --json`
-2. Adds `mise` itself via `mise --version` (not in `mise ls`)
-3. For each tool, checks `.state.json` and skips if version unchanged (unless
-   `--force`)
-4. Looks up the tool in the **registry** — runs a shell command, or calls a handler
-   (e.g. qsv via HTTP fetch, hyperfine/killport from bundled files)
-5. Writes files:
+1. Lists globally installed tools via `mise ls --global --json`, run outside any
+   project, and keeps only the installed version each tool selects globally.
+   A tool with no installed global version is skipped.
+2. Adds `mise` itself via `mise --version` (not in `mise ls`). Its completion
+   always comes from `mise completion`.
+3. Looks up each tool in the **registry**. When several registry names map to
+   the same output file (aliases), one owner is chosen deterministically.
+4. Chooses a provider for each executable and shell before consulting the cache,
+   including with `--force`:
+   - **native**: the install's packslip has a completion (or `usage` CLI spec)
+     for this executable and shell. Nothing is generated. A fallback file this
+     task wrote earlier is removed if it is unchanged.
+   - **legacy**: not a packslip install, or the packslip declares no completion
+     for this executable and shell. The registry command or handler runs.
+   - **needs-attention**: unreadable or unfamiliar packslip metadata, an
+     unresolved artifact, a declared file missing from the install, or only an
+     unsupported spec format. A warning is printed, the fallback is kept and
+     still generated, and nothing is removed.
+   - **pending**: the packslip offers only a generator, which has not been
+     run. The fallback is kept and still generated.
+5. Skips a legacy file when its recorded shell, path, tool, version, install
+   path, and content hash all still match. Otherwise it regenerates the file
+   by running the exact discovered version (`mise x tool@version`) outside
+   your current project.
+6. Writes files atomically:
    - zsh: `mise-completions/zsh/_tool`
    - fish: `mise-completions/fish/tool.fish`
    - bash: `bash-completion/completions/tool` (or `--completions-path`)
+7. Reconciles: files this task wrote for tools that are no longer sync targets
+   are removed if their content is unchanged. Edited files, symlinks, and files
+   it never wrote are kept and reported. Nothing is removed when `mise ls`
+   fails or returns no tools, and `--disable` only skips a tool.
 
-State lives in `~/.local/share/mise-completions/.state.json`.
+State lives in `$XDG_DATA_HOME/mise-completions/.state.json` (schema 2). It
+records each output by absolute path, with its shell, executable, tool,
+version, install path, provider, and content hash, so runs for different
+shells or output directories never mask one another. Runs that share the file
+take a lock (`.state.json.lock`), so concurrent postinstall and manual runs are
+serialized.
+
+## Checking native completions
+
+After a tool switches to native loading:
+
+1. Start a fresh shell. For zsh, delete the completion dump file your
+   `compinit` uses first.
+2. Check that mise can print the script, for example
+   `mise completion zsh --tool hk >/dev/null`.
+3. After the first prompt in a fresh zsh, run `typeset -f _hk`. It should be
+   mise's loader, which calls `mise completion zsh --tool hk`. Then press Tab
+   on `hk`.
+4. Switch between projects that select different installed versions and check
+   that completion follows the active version.
 
 ## Registry overrides
 
-Built-in tool mappings live in [`registry.ts`](registry.ts). Reusable command
-templates are in [`presets.ts`](presets.ts) (`standard`, `ghStyle`, etc.).
+Built-in tool mappings live in [`registry.ts`](src/registry.ts). Reusable command
+templates are in [`presets.ts`](src/presets.ts) (`standard`, `ghStyle`, etc.).
+
+Keep registry entries for tools that also publish packslip completions (for
+example `aube`, `hk`, `pitchfork`, `usage`, `fnox`). Older versions and
+installs from other backends still need them, and detection is per installed
+version, so no exclusion list is needed.
 
 Override or extend locally at:
 
@@ -158,7 +267,7 @@ export const tools: Record<string, RegistryEntry> = {
 
 For handlers that fetch remote files or read bundled completions, use a
 `RegistryHandlerEntry` in the registry (see `qsv`, `hyperfine`, and `killport`
-in [`registry.ts`](registry.ts)). For one-off user logic, vendor this repo and
+in [`registry.ts`](src/registry.ts)). For one-off user logic, vendor this repo and
 edit [`custom-completions.ts`](src/custom-completions.ts) — it is merged last
 and starts empty.
 
@@ -188,6 +297,10 @@ mise cache clear
 mise run sync-completions
 ```
 
+State files from versions before schema 2 are ignored and replaced. Files those
+versions wrote are not tracked, so they are never removed automatically.
+Delete the completion directories and `.state.json` once before the first run.
+
 ## Security
 
 Remote mise tasks download and execute code from the URL you configure. Only use
@@ -197,16 +310,22 @@ sources you trust, and **pin to a git ref** (tag or commit SHA) — never floati
 ## Development
 
 ```bash
-chmod +x sync-completions
-./sync-completions --shell zsh --verbose
-deno check src/cli.ts src/presets.ts src/registry.ts src/custom-completions.ts src/shared.ts src/completion-helpers.ts
+mise run check      # type-check sources and tests
+mise run lint
+mise run fmt --check
+mise run test       # fixture tests; uses a fake `mise` on PATH and temp dirs only
 ```
+
+Packslip detection lives in [`src/packslip.ts`](src/packslip.ts). It reads
+internal mise files (`.mise-packslip.json`, `.mise-packslip-artifact`,
+`.mise-packslip/`), not a public API, and is tested against the mise
+2026.9.17 layout. Re-check it whenever the minimum mise version is raised.
 
 Clone and point mise at a local path while developing:
 
 ```toml
 [tasks.sync-completions]
-file = "{{ config_root }}/path/to/mise-sync-completions/sync-completions"
+file = "{{ config_root }}/path/to/mise-sync-completions/src/sync-completions"
 ```
 
 ## Migrating from chezmoi dotfiles

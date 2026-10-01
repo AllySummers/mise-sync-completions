@@ -1,6 +1,6 @@
 #!/usr/bin/env -S deno run --allow-env --allow-run --allow-read --allow-write --allow-net --allow-sys
 //MISE description="Sync shell completions for all installed mise tools"
-//USAGE flag "--force -f" help="Regenerate all completions regardless of cached version" env="MISE_SYNC_COMPLETIONS_FORCE"
+//USAGE flag "--force -f" help="Regenerate all legacy completions regardless of cached version" env="MISE_SYNC_COMPLETIONS_FORCE"
 //USAGE flag "--verbose -v" help="Print per-tool status" env="MISE_SYNC_COMPLETIONS_VERBOSE"
 //USAGE flag "--quiet -q" help="Hide all output except errors" env="MISE_SYNC_COMPLETIONS_QUIET"
 //USAGE flag "--http-completions" help="Allow fetching completions from HTTP (e.g. qsv)" negate="--no-http-completions" default=#true env="MISE_SYNC_COMPLETIONS_HTTP_COMPLETIONS"
@@ -13,7 +13,6 @@
 //USAGE   help "Override the shell to sync completions for"
 //USAGE   choices "zsh" "bash" "fish"
 //USAGE }
-
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { cli } from './cli.ts';
@@ -22,9 +21,14 @@ import { type Shell, VALID_SHELLS } from './shared.ts';
 const expandHome = (path: string) => path.startsWith('~/') ? join(homedir(), path.slice(2)) : path;
 const dataHome = () => Deno.env.get('XDG_DATA_HOME') ?? join(homedir(), '.local', 'share');
 
+/** bash-completion's user directory: the first `BASH_COMPLETION_USER_DIR` entry, else XDG. */
+const bashCompletionUserDir = (): string =>
+  Deno.env.get('BASH_COMPLETION_USER_DIR')?.split(':').find(Boolean) ??
+    join(dataHome(), 'bash-completion');
+
 const defaultCompletionsPath = (shell: Shell): string => {
   if (shell === 'bash') {
-    return join(dataHome(), 'bash-completion', 'completions');
+    return join(bashCompletionUserDir(), 'completions');
   }
   return join(dataHome(), 'mise-completions', shell);
 };

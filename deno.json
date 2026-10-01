@@ -15,10 +15,20 @@
   "lock": false,
   "nodeModulesDir": "none",
   "vendor": false,
+  "test": {
+    "include": ["tests/"],
+    "permissions": {
+      "read": true,
+      "write": true,
+      "run": true,
+      "env": true
+    }
+  },
   "fmt": {
     "include": [
       "src/**/*.ts",
-      "src/sync-completions"
+      "src/sync-completions",
+      "tests/**/*.ts"
     ],
     "semiColons": true,
     "singleQuote": true,

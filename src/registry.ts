@@ -87,6 +87,7 @@ export const tools: Record<string, RegistryEntry> = {
   railway: {
     ...standardCommands('railway'),
     aliases: ['github:railwayapp/cli'],
+    completionName: 'railway',
   },
   supabase: completionsFlag,
 
@@ -217,7 +218,7 @@ export const tools: Record<string, RegistryEntry> = {
     completionName: 'git-spice',
     shells: ['zsh', 'bash', 'fish'],
     handler: async (tool, shell) => {
-      const completion = await runMiseCommand(tool.name, [
+      const completion = await runMiseCommand(tool, [
         'git-spice',
         'shell',
         'completion',
@@ -263,7 +264,7 @@ export const tools: Record<string, RegistryEntry> = {
     completionName: 'neon',
     shells: ['zsh'],
     handler: async (tool) => {
-      const completion = await runMiseCommand(tool.name, ['neon', 'completion']);
+      const completion = await runMiseCommand(tool, ['neon', 'completion']);
       return completion?.replaceAll('neonctl', 'neon') ?? null;
     },
   },

@@ -1,4 +1,19 @@
-min_version = "2026.6.1"
+min_version = "2026.9.17"
 
 [tools]
 deno = "2.8.3"
+
+[tasks.check]
+description = "Type-check sources and tests"
+run = "deno check . src/sync-completions"
+
+[tasks.lint]
+run = "deno lint"
+
+[tasks.fmt]
+usage = 'flag "--check" help="Fail instead of rewriting unformatted files"'
+run = "deno fmt{% if usage.check %} --check{% endif %}"
+
+[tasks.test]
+description = "Fixture tests; fake mise on PATH, temp dirs only"
+run = "deno test -P"

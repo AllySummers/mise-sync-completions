@@ -1,14 +1,21 @@
 import { join } from 'node:path';
-import type { Shell } from './shared.ts';
+import type { MiseToolInfo, Shell } from './shared.ts';
+
+/** `name@version` for a discovered install, so generation runs that exact version. */
+export const miseToolSpec = (tool: MiseToolInfo): string =>
+  tool.install_path && tool.version ? `${tool.name}@${tool.version}` : tool.name;
 
 export const runMiseCommand = async (
-  miseTool: string,
+  miseTool: string | MiseToolInfo,
   command: string[],
 ): Promise<string | null> => {
+  const spec = typeof miseTool === 'string' ? miseTool : miseToolSpec(miseTool);
   const result = await new Deno.Command('mise', {
-    args: ['x', miseTool, '--', ...command],
+    args: ['x', spec, '--', ...command],
     stdout: 'piped',
     stderr: 'null',
+    // `mise x` has no --global flag; `/` has no project config above it, so only global config applies.
+    cwd: '/',
   }).output();
   const output = new TextDecoder().decode(result.stdout);
   return result.success && output.trim() ? output : null;
