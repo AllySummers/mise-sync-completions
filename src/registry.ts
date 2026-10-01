@@ -1,7 +1,7 @@
 import {
   fetchHttpCompletion,
+  findBundledCompletion,
   githubRawUrls,
-  readBundledCompletion,
   runMiseCommand,
 } from './completion-helpers.ts';
 import {
@@ -15,13 +15,40 @@ import {
   standard,
   standardCommands,
 } from './presets.ts';
-import type { MiseToolInfo, RegistryEntry, Shell } from './shared.ts';
+import type {
+  MiseToolInfo,
+  RegistryEntry,
+  RegistryHandlerEntry,
+  RegistryMetadata,
+  Shell,
+  ShellCommandsEntry,
+} from './shared.ts';
 
 const QSV_COMPLETION_PATHS: Record<Shell, string> = {
   zsh: 'contrib/completions/examples/qsv.zsh',
   bash: 'contrib/completions/examples/qsv.bash',
   fish: 'contrib/completions/examples/qsv.fish',
 };
+
+/**
+ * A tool that ships completion files in its download rather than generating them. `files` maps
+ * each supported shell to a glob, relative to the install path, that matches its completion file.
+ */
+const bundled = (
+  files: Partial<Record<Shell, string>>,
+  metadata: RegistryMetadata = {},
+): RegistryHandlerEntry => ({
+  ...metadata,
+  source: 'bundled',
+  shells: Object.keys(files) as Shell[],
+  handler: async (tool, shell) => await findBundledCompletion(tool.install_path, files, shell),
+});
+
+const trashCommand = (command: string): ShellCommandsEntry => ({
+  providedBy: 'pipx:trash-cli',
+  zsh: `${command} --print-completion zsh`,
+  bash: `${command} --print-completion bash`,
+});
 
 export const tools: Record<string, RegistryEntry> = {
   // Core tools
@@ -47,6 +74,14 @@ export const tools: Record<string, RegistryEntry> = {
   ko: standard,
   kubeseal: standard,
   linkerd: standard,
+  nova: standard,
+  // mise's registry lists this as `cilium-hubble`, but the aqua backend installed directly
+  // (`aqua:cilium/hubble`) is keyed by its full name. The binary is `hubble` either way.
+  hubble: {
+    ...standardCommands('hubble'),
+    aliases: ['cilium-hubble', 'aqua:cilium/hubble'],
+    completionName: 'hubble',
+  },
   skaffold: standard,
   stern: standard,
   talosctl: standard,
@@ -288,11 +323,31 @@ export const tools: Record<string, RegistryEntry> = {
     bash: 'tv init bash',
     fish: 'tv init fish',
   },
+  // Dynamic completions: the script calls back into `jj` on Tab, so it also completes revisions,
+  // bookmarks, and other repo state. Selected through an env var, not a subcommand.
   jj: {
-    zsh: 'jj util completion zsh',
-    bash: 'jj util completion bash',
-    fish: 'jj util completion fish',
+    zsh: 'env COMPLETE=zsh jj',
+    bash: 'env COMPLETE=bash jj',
+    fish: 'env COMPLETE=fish jj',
   },
+  // Not in mise's registry; installs as `forgejo:forgejo-contrib/forgejo-cli` (prebuilt, Linux
+  // only), `github:forgejo-contrib/forgejo-cli`, or `cargo:forgejo-cli`. The binary is `fj`.
+  'forgejo-cli': {
+    ...standardCommands('fj'),
+    aliases: [
+      'forgejo:forgejo-contrib/forgejo-cli',
+      'github:forgejo-contrib/forgejo-cli',
+      'cargo:forgejo-cli',
+    ],
+    completionName: 'fj',
+  },
+  // trash-cli (installed as `pipx:trash-cli`) provides several commands, each with its own
+  // completion. Only zsh and bash are supported.
+  trash: trashCommand('trash'),
+  'trash-empty': trashCommand('trash-empty'),
+  'trash-list': trashCommand('trash-list'),
+  'trash-put': trashCommand('trash-put'),
+  'trash-restore': trashCommand('trash-restore'),
   openspec: {
     aliases: ['npm:@fission-ai/openspec'],
     completionName: 'openspec',
@@ -373,23 +428,38 @@ export const tools: Record<string, RegistryEntry> = {
       ),
   },
 
-  hyperfine: {
-    source: 'bundled',
-    handler: async (tool, shell) =>
-      await readBundledCompletion(tool.install_path, 'hyperfine-v*', 'autocomplete', {
-        zsh: '_hyperfine',
-        bash: 'hyperfine.bash',
-        fish: 'hyperfine.fish',
-      }, shell),
-  },
+  hyperfine: bundled({
+    zsh: '**/autocomplete/_hyperfine',
+    bash: '**/autocomplete/hyperfine.bash',
+    fish: '**/autocomplete/hyperfine.fish',
+  }),
+  killport: bundled({
+    zsh: '**/completions/_killport',
+    bash: '**/completions/killport.bash',
+    fish: '**/completions/killport.fish',
+  }),
 
-  killport: {
-    source: 'bundled',
-    handler: async (tool, shell) =>
-      await readBundledCompletion(tool.install_path, 'killport-*', 'completions', {
-        zsh: '_killport',
-        bash: 'killport.bash',
-        fish: 'killport.fish',
-      }, shell),
-  },
+  yazi: bundled({
+    zsh: '**/completions/_yazi',
+    bash: '**/completions/yazi.bash',
+    fish: '**/completions/yazi.fish',
+  }),
+  ya: bundled({
+    zsh: '**/completions/_ya',
+    bash: '**/completions/ya.bash',
+    fish: '**/completions/ya.fish',
+  }, { providedBy: 'yazi' }),
+  zoxide: bundled({
+    zsh: '**/completions/_zoxide',
+    bash: '**/completions/zoxide.bash',
+    fish: '**/completions/zoxide.fish',
+  }),
+  // Not in mise's registry; installs as `github:afadesigns/zshellcheck`. No fish completion.
+  zshellcheck: bundled(
+    {
+      zsh: '**/completions/zsh/_zshellcheck',
+      bash: '**/completions/bash/zshellcheck-completion.bash',
+    },
+    { aliases: ['github:afadesigns/zshellcheck'], completionName: 'zshellcheck' },
+  ),
 };

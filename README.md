@@ -264,8 +264,13 @@ export const tools: Record<string, RegistryEntry> = {
 ```
 
 For handlers that fetch remote files or read bundled completions, use a
-`RegistryHandlerEntry` in the registry (see `qsv`, `hyperfine`, and `killport`
-in [`registry.ts`](src/registry.ts)). For one-off user logic, vendor this repo and
+`RegistryHandlerEntry` in the registry (see `qsv`
+in [`registry.ts`](src/registry.ts)). Tools that ship completion files in their
+download can use the `bundled` helper in [`registry.ts`](src/registry.ts), which
+maps each shell to a glob relative to the install path, for example
+`**/completions/_tool`. `**` also matches zero directories, so one pattern covers
+archives with and without a top-level directory (see `yazi`, `zoxide`, and
+`zshellcheck`). For one-off user logic, vendor this repo and
 edit [`custom-completions.ts`](src/custom-completions.ts) — it is merged last
 and starts empty.
 

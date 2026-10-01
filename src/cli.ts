@@ -14,7 +14,7 @@ import type {
 import { isRegistryHandlerEntry } from './shared.ts';
 
 /** Bump when generated output changes for an unchanged tool version, to invalidate cached files. */
-const GENERATOR_REVISION = 1;
+const GENERATOR_REVISION = 2;
 
 interface OutputRecord {
   shell: Shell;

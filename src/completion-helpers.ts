@@ -1,4 +1,5 @@
-import { join } from 'node:path';
+import { expandGlob } from '@std/fs';
+import { sep } from 'node:path';
 import type { MiseToolInfo, Shell } from './shared.ts';
 
 /** `tool@version` for a discovered install, so generation runs that exact version. */
@@ -39,23 +40,6 @@ export const runMiseCommand = (
     ...command,
   ]);
 
-const matchGlobPrefix = (name: string, pattern: string): boolean => {
-  const prefix = pattern.replace(/\*.*$/, '');
-  return name.startsWith(prefix);
-};
-
-const findPlatformDir = async (
-  installPath: string,
-  dirPattern: string,
-): Promise<string | null> => {
-  for await (const entry of Deno.readDir(installPath)) {
-    if (entry.isDirectory && matchGlobPrefix(entry.name, dirPattern)) {
-      return join(installPath, entry.name);
-    }
-  }
-  return null;
-};
-
 export const fetchHttpCompletion = async (
   urls: Record<Shell, string>,
   shell: Shell,
@@ -81,19 +65,30 @@ export const githubRawUrls = (
   ) as Record<Shell, string>;
 };
 
-export const readBundledCompletion = async (
+/**
+ * Reads the completion file a tool ships in its download. `globs` maps each shell to a glob,
+ * relative to the install path, such as `**\/completions/_tool`. `**` also matches zero
+ * directories, so one pattern covers archives with and without a top-level directory. When
+ * several files match, the shallowest wins.
+ */
+export const findBundledCompletion = async (
   installPath: string,
-  platformDirPattern: string,
-  subdir: string,
-  filenames: Record<Shell, string>,
+  globs: Partial<Record<Shell, string>>,
   shell: Shell,
 ): Promise<string | null> => {
-  const platformDir = await findPlatformDir(installPath, platformDirPattern);
-  if (!platformDir) {
+  const glob = globs[shell];
+  if (!installPath || !glob) {
     return null;
   }
   try {
-    return await Deno.readTextFile(join(platformDir, subdir, filenames[shell]));
+    const paths: string[] = [];
+    for await (const entry of expandGlob(glob, { root: installPath, includeDirs: false })) {
+      paths.push(entry.path);
+    }
+    const [best] = paths.toSorted((a, b) =>
+      a.split(sep).length - b.split(sep).length || (a < b ? -1 : 1)
+    );
+    return best ? await Deno.readTextFile(best) : null;
   } catch {
     return null;
   }

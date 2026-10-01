@@ -12,6 +12,9 @@
     ]
   },
   "exports": "./src/cli.ts",
+  "imports": {
+    "@std/fs": "jsr:@std/fs@^1.0.24"
+  },
   "lock": false,
   "nodeModulesDir": "none",
   "vendor": false,

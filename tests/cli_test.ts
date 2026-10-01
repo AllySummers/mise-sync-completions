@@ -463,6 +463,94 @@ test('state that is not schema 2 is ignored and replaced', async (h) => {
   assert.equal((await h.state()).schema_version, 2);
 });
 
+test('jj uses dynamic completions through COMPLETE', async (h) => {
+  await h.tools({ jj: { version: '0.30.0' } });
+  await h.run();
+  assert.ok((await h.calls()).some((c) => c.args === 'x jj@0.30.0 -- env COMPLETE=zsh jj'));
+});
+
+test('a backend-qualified tool writes under its binary name', async (h) => {
+  await h.tools({ 'aqua:cilium/hubble': { version: '1.17.0' } });
+  await h.run();
+  assert.ok(
+    (await h.calls()).some((c) =>
+      c.args === 'x aqua:cilium/hubble@1.17.0 -- hubble completion zsh'
+    ),
+  );
+  assert.ok(await exists(h.file('zsh', '_hubble')));
+
+  await h.tools({ 'cargo:forgejo-cli': { version: '0.4.0' } });
+  await h.run({ shell: 'fish' });
+  assert.ok(await exists(h.file('fish', 'fj.fish')));
+});
+
+test('trash-cli completes each of its commands, in zsh and bash only', async (h) => {
+  await h.tools({ 'pipx:trash-cli': { version: '0.24.5' } });
+  await h.run();
+  const calls = (await h.calls()).map((c) => c.args);
+  assert.ok(calls.includes('x pipx:trash-cli@0.24.5 -- trash-put --print-completion zsh'));
+  for (const command of ['trash', 'trash-empty', 'trash-list', 'trash-put', 'trash-restore']) {
+    assert.ok(await exists(h.file('zsh', `_${command}`)), command);
+  }
+  assert.match(await h.run({ shell: 'fish' }), /updated: 1/); // mise itself
+  assert.equal(await exists(h.file('fish', 'trash.fish')), false);
+});
+
+test('bundled completions with per-shell subdirectories, and the older tools', async (h) => {
+  await h.tools({
+    'github:afadesigns/zshellcheck': { version: '1.0.11' },
+    hyperfine: { version: '1.20.0' },
+  });
+  const files = {
+    [join(h.install('github:afadesigns-zshellcheck'), '1.0.11', 'completions', 'zsh')]:
+      '_zshellcheck',
+    [join(h.install('github:afadesigns-zshellcheck'), '1.0.11', 'completions', 'bash')]:
+      'zshellcheck-completion.bash',
+    [
+      join(
+        h.install('hyperfine'),
+        '1.20.0',
+        'hyperfine-v1.20.0-x86_64-apple-darwin',
+        'autocomplete',
+      )
+    ]: '_hyperfine',
+  };
+  for (const [dir, name] of Object.entries(files)) {
+    await Deno.mkdir(dir, { recursive: true });
+    await Deno.writeTextFile(join(dir, name), `# ${name}\n`);
+  }
+  await h.run();
+  assert.equal(await Deno.readTextFile(h.file('zsh', '_zshellcheck')), '# _zshellcheck\n');
+  assert.equal(await Deno.readTextFile(h.file('zsh', '_hyperfine')), '# _hyperfine\n');
+  await h.run({ shell: 'bash' });
+  assert.ok(await exists(h.file('bash', 'zshellcheck')));
+  assert.match(await h.run({ shell: 'fish' }), /no-shell github:afadesigns\/zshellcheck/);
+});
+
+test('bundled completions are found with or without a top-level archive directory', async (h) => {
+  await h.tools({ yazi: { version: '25.5.31' }, zoxide: { version: '0.9.8' } });
+  const yazi = join(h.install('yazi'), '25.5.31', 'yazi-x86_64-unknown-linux-gnu', 'completions');
+  await Deno.mkdir(yazi, { recursive: true });
+  await Deno.writeTextFile(join(yazi, '_yazi'), '#compdef yazi\n');
+  await Deno.writeTextFile(join(yazi, '_ya'), '#compdef ya\n');
+  // zoxide ships a flat archive: no top-level directory.
+  const zoxide = join(h.install('zoxide'), '0.9.8', 'completions');
+  await Deno.mkdir(zoxide, { recursive: true });
+  await Deno.writeTextFile(join(zoxide, '_zoxide'), '#compdef zoxide\n');
+
+  const out = await h.run();
+  assert.match(out, /updated: 4/); // yazi, ya, zoxide, and mise itself
+  assert.equal(await Deno.readTextFile(h.file('zsh', '_yazi')), '#compdef yazi\n');
+  assert.equal(await Deno.readTextFile(h.file('zsh', '_ya')), '#compdef ya\n');
+  assert.equal(await Deno.readTextFile(h.file('zsh', '_zoxide')), '#compdef zoxide\n');
+
+  // Nothing is generated when the archive ships no file for the shell.
+  assert.match(await h.run({ shell: 'fish' }), /failed: 3/);
+  assert.equal(await exists(h.file('fish', 'zoxide.fish')), false);
+
+  assert.match(await h.run({ enableBundledCompletions: false, force: true }), /no-cmd yazi/);
+});
+
 const hasZsh = await new Deno.Command('zsh', {
   args: ['-fc', 'true'],
   stdout: 'null',
