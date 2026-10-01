@@ -34,26 +34,26 @@ Pin to a
 not `main`.
 
 The postinstall hook keeps the fallback files current and reconciles files
-whose tool now has a native packslip completion. Native completions are not
+whose tool now has a packslip completion. Packslip completions are not
 regenerated on tool updates: mise resolves them for the active version every
 time you press Tab.
 
 ### Requirements
 
-- [mise](https://mise.jdx.dev) **2026.9.17** or newer. The packslip detection
-  reads mise's install layout as of that release, and the task refuses to run
-  on older versions.
+- [mise](https://mise.jdx.dev). Handing off to packslip needs a mise with
+  `mise completion --tool` (developed against 2026.9.17). On an older mise the
+  probe simply fails, so every tool keeps its generated fallback file.
 - [deno](https://deno.com/) — install via mise (`tools.deno = "2.8.2"` above)
 
 ### Shell wiring
 
 There are two providers, and most setups use both:
 
-1. **Native packslip completions**, loaded by mise itself. Nothing is written
-   by this task.
-2. **Fallback files** that this task generates for every other tool.
+1. **Packslip completions**, loaded by mise itself. Nothing is written by this
+   task.
+2. **Generated fallback files** that this task writes for every other tool.
 
-#### Native packslip completions
+#### Packslip completions
 
 [Activate mise](https://mise.jdx.dev/cli/activate.html) in your interactive
 shell. As tools become active, activation registers mise's loaders and
@@ -187,22 +187,20 @@ mise run sync-completions --print-path
 3. Looks up each tool in the **registry**. When several registry names map to
    the same output file (aliases), one owner is chosen deterministically.
 4. Chooses a provider for each executable and shell before consulting the cache,
-   including with `--force`:
-   - **native**: the install's packslip has a completion (or `usage` CLI spec)
-     for this executable and shell. Nothing is generated. A fallback file this
-     task wrote earlier is removed if it is unchanged.
-   - **legacy**: not a packslip install, or the packslip declares no completion
-     for this executable and shell. The registry command or handler runs.
-   - **needs-attention**: unreadable or unfamiliar packslip metadata, an
-     unresolved artifact, a declared file missing from the install, or only an
-     unsupported spec format. A warning is printed, the fallback is kept and
-     still generated, and nothing is removed.
-   - **pending**: the packslip offers only a generator, which has not been
-     run. The fallback is kept and still generated.
-5. Skips a legacy file when its recorded shell, path, tool, version, install
-   path, and content hash all still match. Otherwise it regenerates the file
-   by running the exact discovered version (`mise x tool@version`) outside
-   your current project.
+   including with `--force`. For an install with a `.mise-packslip.json`, it
+   asks mise itself: `mise completion <shell> --tool <executable>`, run outside
+   any project.
+   - **packslip**: mise prints a completion. Nothing is generated. A file this
+     task generated earlier is removed if it is unchanged.
+   - **generated**: anything else (not a packslip install, no completion for
+     this executable and shell, or a failed probe). The registry command or
+     handler runs. A failed probe never removes anything.
+5. Skips a generated file when its recorded shell, path, tool, version, install
+   path, pinned `requires` versions, and content hash all still match.
+   Otherwise it regenerates the file by running the exact discovered versions
+   (`mise x tool@version`) outside your current project. A file that exists but
+   was not written by this task, or was edited since, is never overwritten: it
+   is reported and counted as `preserved`.
 6. Writes files atomically:
    - zsh: `mise-completions/zsh/_tool`
    - fish: `mise-completions/fish/tool.fish`
@@ -219,9 +217,9 @@ shells or output directories never mask one another. Runs that share the file
 take a lock (`.state.json.lock`), so concurrent postinstall and manual runs are
 serialized.
 
-## Checking native completions
+## Checking packslip completions
 
-After a tool switches to native loading:
+After a tool switches to a packslip completion:
 
 1. Start a fresh shell. For zsh, delete the completion dump file your
    `compinit` uses first.
@@ -298,8 +296,10 @@ mise run sync-completions
 ```
 
 State files from versions before schema 2 are ignored and replaced. Files those
-versions wrote are not tracked, so they are never removed automatically.
-Delete the completion directories and `.state.json` once before the first run.
+versions wrote are not tracked, so they are neither removed nor overwritten:
+they show up as `preserved`. Delete just the files this task generated (and
+`.state.json`) once before the first run. Don't delete a shared directory such
+as bash-completion's `completions`, which holds other tools' files.
 
 ## Security
 
@@ -316,10 +316,9 @@ mise run fmt --check
 mise run test       # fixture tests; uses a fake `mise` on PATH and temp dirs only
 ```
 
-Packslip detection lives in [`src/packslip.ts`](src/packslip.ts). It reads
-internal mise files (`.mise-packslip.json`, `.mise-packslip-artifact`,
-`.mise-packslip/`), not a public API, and is tested against the mise
-2026.9.17 layout. Re-check it whenever the minimum mise version is raised.
+Packslip detection lives in [`src/packslip.ts`](src/packslip.ts). It asks mise
+rather than parsing packslip metadata; the only internal detail it relies on is
+the `.mise-packslip.json` marker file, used to avoid probing non-packslip tools.
 
 Clone and point mise at a local path while developing:
 

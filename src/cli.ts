@@ -1,7 +1,7 @@
 import { basename, dirname, join, resolve } from 'node:path';
-import { miseToolSpec } from './completion-helpers.ts';
+import { miseToolSpec, runMise } from './completion-helpers.ts';
 import { handlers as customHandlers } from './custom-completions.ts';
-import { inspectPackslip, type NativeSource, type PackslipInspection } from './packslip.ts';
+import { hasPackslipCompletion } from './packslip.ts';
 import { tools as builtinTools } from './registry.ts';
 import type {
   CLIOptions,
@@ -13,10 +13,8 @@ import type {
 } from './shared.ts';
 import { isRegistryHandlerEntry } from './shared.ts';
 
-/** Bump when legacy output changes for an unchanged tool version, to invalidate cached files. */
+/** Bump when generated output changes for an unchanged tool version, to invalidate cached files. */
 const GENERATOR_REVISION = 1;
-/** The mise release whose packslip install layout `packslip.ts` was written against. */
-export const MIN_MISE_VERSION = '2026.9.17';
 
 interface OutputRecord {
   shell: Shell;
@@ -26,11 +24,13 @@ interface OutputRecord {
   tool: string;
   version: string;
   install_path: string;
-  provider: 'legacy' | 'native';
+  /** Pinned `tool@version` specs the generator ran with, so upgrading a `requires` tool regenerates. */
+  specs: string[];
+  /** `generated`: this task wrote the file. `packslip`: mise loads the completion itself. */
+  provider: 'generated' | 'packslip';
   revision: number;
-  /** sha256 of the legacy file as written; the proof of ownership required before removing it. */
+  /** sha256 of the generated file as written; the proof of ownership required before removing it. */
   sha256?: string;
-  native_source?: NativeSource;
 }
 
 interface State {
@@ -58,8 +58,6 @@ interface SyncTarget {
   path: string;
 }
 
-type NativeInspection = Extract<PackslipInspection, { outcome: 'native' }>;
-
 type OnDisk = { kind: 'missing' } | { kind: 'file'; sha256: string } | { kind: 'other' };
 
 const completionFile = (tool: string, shell: Shell): string => {
@@ -71,25 +69,6 @@ const completionFile = (tool: string, shell: Shell): string => {
     return `${base}.fish`;
   }
   return base;
-};
-
-const exec = async ([cmd, ...args]: string[]): Promise<{ out: string; ok: boolean }> => {
-  if (!cmd) {
-    throw new Error('cmd is required');
-  }
-  try {
-    const proc = new Deno.Command(cmd, {
-      args,
-      stdout: 'piped',
-      stderr: 'null',
-      // `mise x`/`mise ls` have no global-only mode; `/` has no project config above it.
-      cwd: '/',
-    });
-    const result = await proc.output();
-    return { out: new TextDecoder().decode(result.stdout), ok: result.success };
-  } catch {
-    return { out: '', ok: false };
-  }
 };
 
 const emptyState = (): State => ({ schema_version: 2, outputs: {} });
@@ -133,10 +112,8 @@ const lockState = async (statePath: string): Promise<Deno.FsFile> => {
   return file;
 };
 
-const sha256 = async (bytes: Uint8Array<ArrayBuffer>): Promise<string> => {
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-  return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
-};
+const sha256 = async (bytes: Uint8Array<ArrayBuffer>): Promise<string> =>
+  new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)).toHex();
 
 const inspectOutput = async (path: string): Promise<OnDisk> => {
   let info: Deno.FileInfo;
@@ -197,7 +174,6 @@ const buildSyncTargets = (
   outputDir: string,
 ): SyncTarget[] => {
   const targets: SyncTarget[] = [];
-  const seen = new Set<string>();
   const target = (syncName: string, info: MiseToolInfo, entry: RegistryEntry): SyncTarget => {
     const completionName = typeof entry === 'object' ? entry.completionName ?? syncName : syncName;
     return {
@@ -211,20 +187,16 @@ const buildSyncTargets = (
 
   for (const [name, info] of Object.entries(installed)) {
     const entry = index.byName[name];
-    if (!entry || seen.has(name)) {
-      continue;
+    if (entry) {
+      targets.push(target(name, { ...info, name }, entry));
     }
-    seen.add(name);
-    targets.push(target(name, { ...info, name }, entry));
   }
 
   for (const { name, providedBy, entry } of index.providedBy) {
     const provider = installed[providedBy];
-    if (!provider || seen.has(name)) {
-      continue;
+    if (provider) {
+      targets.push(target(name, provider, entry));
     }
-    seen.add(name);
-    targets.push(target(name, { ...provider, name: provider.name }, entry));
   }
 
   return targets;
@@ -281,13 +253,9 @@ const shouldSkipEntry = (
 };
 
 /** Registry command strings are split on whitespace into argv; use a handler for shell syntax or quoted args. */
-const runCommand = async (cmd: string, miseTools: string[]): Promise<string | null> => {
+const runCommand = (cmd: string, miseTools: string[]): Promise<string | null> => {
   const [bin, ...args] = cmd.split(/\s+/);
-  if (!bin) {
-    return null;
-  }
-  const { out, ok } = await exec(['mise', 'x', ...miseTools, '--', bin, ...args]);
-  return ok && out.trim() ? out : null;
+  return bin ? runMise(['x', ...miseTools, '--', bin, ...args]) : Promise.resolve(null);
 };
 
 const isCommandFn = (entry: RegistryEntry): entry is CommandFn => typeof entry === 'function';
@@ -306,21 +274,30 @@ const supportsShell = (
   return entry[shell] !== undefined;
 };
 
-const resolveCompletion = async (
-  { syncName, info, entry }: SyncTarget,
-  shell: Shell,
+/** The pinned `tool@version` specs a target's generator runs under: its provider, then `requires`. */
+const generatorSpecs = (
+  { syncName, entry }: SyncTarget,
   tools: Record<string, MiseToolInfo>,
-): Promise<string | null> => {
-  const tool: MiseToolInfo = { ...info, name: syncName };
+): string[] => {
   const provider = typeof entry === 'object' && entry.providedBy ? entry.providedBy : syncName;
   const requirements = typeof entry === 'object'
     ? Array.isArray(entry.requires) ? entry.requires : entry.requires ? [entry.requires] : []
     : [];
-  const pinned = (name: string) => {
+  return [provider, ...requirements.filter((name) => name !== provider)].map((name) => {
     const found = tools[name];
     return found ? miseToolSpec({ ...found, name }) : name;
-  };
-  const miseTools = [provider, ...requirements.filter((name) => name !== provider)].map(pinned);
+  });
+};
+
+const resolveCompletion = async (
+  t: SyncTarget,
+  shell: Shell,
+  miseTools: string[],
+): Promise<string | null> => {
+  const { syncName, info, entry } = t;
+  // `name` is the command (handlers and command presets build argv from it); `provider` is the
+  // mise tool to run it under, which differs for `providedBy` entries.
+  const tool: MiseToolInfo = { ...info, name: syncName, provider: info.name };
 
   if (isRegistryHandlerEntry(entry)) {
     return await entry.handler(tool, shell);
@@ -337,8 +314,9 @@ const resolveCompletion = async (
 
 /** The installed version each global tool selects, or `null` when discovery fails. */
 const discoverTools = async (): Promise<Record<string, MiseToolInfo> | null> => {
-  const { out, ok } = await exec(['mise', 'ls', '--global', '--json']);
-  if (!ok || !out.trim()) {
+  // `--global` lists global config only, but `active` is still resolved from the cwd, hence `/`.
+  const out = await runMise(['ls', '--global', '--json']);
+  if (!out) {
     return null;
   }
   let raw: Record<string, Omit<MiseToolInfo, 'name'>[]>;
@@ -355,62 +333,41 @@ const discoverTools = async (): Promise<Record<string, MiseToolInfo> | null> => 
   );
 };
 
-const addMiseSelf = async (
-  tools: Record<string, MiseToolInfo>,
-): Promise<string | undefined> => {
-  const { out, ok } = await exec(['mise', '--version']);
-  if (!ok) {
-    return undefined;
-  }
-  const version = out.trim().split(/\s+/).at(0) ?? '';
-  tools.mise = { name: 'mise', version, install_path: '', installed: true, active: true };
-  return version;
-};
-
-export const versionAtLeast = (version: string, min: string): boolean => {
-  const parts = (v: string) => v.split(/[.-]/).map((n) => Number.parseInt(n, 10) || 0);
-  const [have, want] = [parts(version), parts(min)];
-  for (let i = 0; i < Math.max(have.length, want.length); i++) {
-    const diff = (have[i] ?? 0) - (want[i] ?? 0);
-    if (diff) {
-      return diff > 0;
-    }
-  }
-  return true;
-};
-
-const requireMiseVersion = (version: string | undefined): void => {
-  if (!version) {
-    throw new Error('cannot determine the mise version (`mise --version` failed)');
-  }
-  if (!versionAtLeast(version, MIN_MISE_VERSION)) {
-    throw new Error(
-      `mise ${version} is older than ${MIN_MISE_VERSION}, the release whose packslip layout this task understands; upgrade mise`,
-    );
+/** `mise ls` does not list mise itself. */
+const addMiseSelf = async (tools: Record<string, MiseToolInfo>): Promise<void> => {
+  const version = (await runMise(['--version']))?.trim().split(/\s+/).at(0);
+  if (version) {
+    tools.mise = { name: 'mise', version, install_path: '', installed: true, active: true };
   }
 };
 
-const isCacheHit = (record: OutputRecord | undefined, t: SyncTarget, onDisk: OnDisk): boolean =>
-  record?.provider === 'legacy' && record.revision === GENERATOR_REVISION &&
-  record.sync_name === t.syncName && record.command === t.completionName &&
-  record.tool === t.info.name && record.version === t.info.version &&
-  record.install_path === t.info.install_path &&
-  onDisk.kind === 'file' && onDisk.sha256 === record.sha256;
+const sameList = (a: string[], b: string[]): boolean =>
+  a.length === b.length && a.every((item, i) => item === b[i]);
 
-const baseRecord = (t: SyncTarget, shell: Shell) => ({
+/** `file` is the on-disk state of the record's path; a generated record owns it only if hashes match. */
+const owns = (record: OutputRecord | undefined, file: OnDisk): boolean =>
+  record?.provider === 'generated' && file.kind === 'file' && file.sha256 === record.sha256;
+
+const isCacheHit = (
+  record: OutputRecord | undefined,
+  t: SyncTarget,
+  specs: string[],
+  onDisk: OnDisk,
+): boolean =>
+  owns(record, onDisk) && record!.revision === GENERATOR_REVISION &&
+  record!.sync_name === t.syncName && record!.command === t.completionName &&
+  record!.tool === t.info.name && record!.version === t.info.version &&
+  record!.install_path === t.info.install_path && sameList(record!.specs ?? [], specs);
+
+const baseRecord = (t: SyncTarget, shell: Shell, specs: string[]) => ({
   shell,
   command: t.completionName,
   sync_name: t.syncName,
   tool: t.info.name,
   version: t.info.version,
   install_path: t.info.install_path,
+  specs,
   revision: GENERATOR_REVISION,
-});
-
-const nativeRecord = (t: SyncTarget, shell: Shell, decision: NativeInspection): OutputRecord => ({
-  ...baseRecord(t, shell),
-  provider: 'native',
-  native_source: decision.source,
 });
 
 export const cli = async (options: CLIOptions): Promise<void> => {
@@ -450,7 +407,7 @@ const sync = async ({
   ]);
 
   const tools = { ...discovered };
-  requireMiseVersion(await addMiseSelf(tools));
+  await addMiseSelf(tools);
 
   const { owners, shadowed } = assignOwners(
     buildSyncTargets(tools, registry, shell, outputDir),
@@ -465,9 +422,7 @@ const sync = async ({
       (!!provider && disabled.has(provider));
   };
 
-  const counts = { updated: 0, skipped: 0, failed: 0, native: 0, removed: 0 };
-  const attention: string[] = [];
-  const pending: string[] = [];
+  const counts = { updated: 0, skipped: 0, failed: 0, packslip: 0, removed: 0, preserved: 0 };
   /** Paths whose record and file must survive reconciliation this run. */
   const retained = new Set<string>();
 
@@ -479,27 +434,26 @@ const sync = async ({
     counts.failed++;
   };
 
-  const handOff = async (t: SyncTarget, decision: NativeInspection) => {
+  /** Mise loads this completion itself: retire our file if (and only if) we wrote it unchanged. */
+  const handOff = async (t: SyncTarget) => {
     const record = state.outputs[t.path];
     const file = `${shell}/${basename(t.path)}`;
     const onDisk = await inspectOutput(t.path);
-    if (record?.provider === 'legacy' && onDisk.kind !== 'missing') {
-      if (onDisk.kind === 'file' && onDisk.sha256 === record.sha256) {
-        await Deno.remove(t.path);
-        counts.removed++;
-        log(`  retire ${t.syncName} → ${file} (mise loads it natively)`);
-      } else {
-        console.warn(`  WARN   ${t.syncName}: ${file} changed since it was written; preserved`);
-      }
+    if (owns(record, onDisk)) {
+      await Deno.remove(t.path);
+      counts.removed++;
+      log(`  retire ${t.syncName} → ${file} (mise loads it natively)`);
+    } else if (record?.provider === 'generated' && onDisk.kind !== 'missing') {
+      console.warn(`  WARN   ${t.syncName}: ${file} changed since it was written; preserved`);
     } else if (onDisk.kind !== 'missing') {
       log(`  keep   ${file} (not written by this task)`);
     }
-    state.outputs[t.path] = nativeRecord(t, shell, decision);
-    counts.native++;
-    log(`  native ${t.syncName}@${t.info.version} (${shell}: ${decision.reason})`);
+    state.outputs[t.path] = { ...baseRecord(t, shell, []), provider: 'packslip' };
+    counts.packslip++;
+    log(`  packslip ${t.syncName}@${t.info.version} (${shell})`);
   };
 
-  await Promise.all(
+  const settled = await Promise.allSettled(
     owners.map(async (t) => {
       const { syncName, info, entry, path } = t;
       if (isDisabled(t)) {
@@ -508,20 +462,10 @@ const sync = async ({
         return;
       }
 
-      const decision = await inspectPackslip(info.install_path, t.completionName, shell);
-      if (decision.outcome === 'native') {
-        if (!decision.generator) {
-          retained.add(path);
-          await handOff(t, decision);
-          return;
-        }
-        pending.push(syncName);
-        log(`  pending ${syncName} (${decision.reason}; keeping legacy completion)`);
-      } else if (decision.outcome === 'needs-attention') {
-        attention.push(syncName);
-        console.warn(
-          `  WARN   ${syncName}: packslip ${decision.reason}; keeping legacy completion`,
-        );
+      if (await hasPackslipCompletion(info.install_path, t.completionName, shell)) {
+        retained.add(path);
+        await handOff(t);
+        return;
       }
 
       if (shouldSkipEntry(entry, enableHttpCompletions, enableBundledCompletions)) {
@@ -536,21 +480,27 @@ const sync = async ({
       }
 
       retained.add(path);
+      const specs = generatorSpecs(t, tools);
+      const record = state.outputs[path];
       const onDisk = await inspectOutput(path);
-      if (!force && isCacheHit(state.outputs[path], t, onDisk)) {
+      if (!force && isCacheHit(record, t, specs, onDisk)) {
         log(`  skip   ${syncName}@${info.version}`);
         counts.skipped++;
         return;
       }
-      if (onDisk.kind === 'other') {
-        console.warn(`  WARN   ${syncName}: ${path} is not a regular file; preserved`);
-        counts.failed++;
+      // Only overwrite what this task wrote and nobody has touched since.
+      if (onDisk.kind !== 'missing' && !owns(record, onDisk)) {
+        const why = record?.provider === 'generated'
+          ? 'changed since it was written'
+          : 'was not written by this task';
+        console.warn(`  WARN   ${syncName}: ${shell}/${basename(path)} ${why}; preserved`);
+        counts.preserved++;
         return;
       }
 
       let content: string | null;
       try {
-        content = await resolveCompletion(t, shell, tools);
+        content = await resolveCompletion(t, shell, specs);
       } catch (error) {
         return fail(syncName, `  error  ${syncName} registry entry (${shell}): ${error}`);
       }
@@ -564,58 +514,64 @@ const sync = async ({
       }
 
       const bytes = new TextEncoder().encode(content);
+      const hash = await sha256(bytes);
       await writeAtomic(path, bytes);
+      state.outputs[path] = { ...baseRecord(t, shell, specs), provider: 'generated', sha256: hash };
       log(`  wrote  ${syncName}@${info.version} → ${shell}/${basename(path)}`);
-      state.outputs[path] = {
-        ...baseRecord(t, shell),
-        provider: 'legacy',
-        sha256: await sha256(bytes),
-      };
       counts.updated++;
     }),
   );
 
-  // An empty or failed inventory must never authorize removing files.
-  if (discovered && Object.keys(discovered).length) {
-    for (const [path, record] of Object.entries(state.outputs)) {
-      if (record.shell !== shell || dirname(path) !== outputDir || retained.has(path)) {
-        continue;
-      }
-      delete state.outputs[path];
-      if (record.provider !== 'legacy') {
-        continue;
-      }
-      const onDisk = await inspectOutput(path);
-      if (onDisk.kind === 'file' && onDisk.sha256 === record.sha256) {
-        await Deno.remove(path);
-        counts.removed++;
-        log(`  remove ${record.sync_name} → ${shell}/${basename(path)} (no longer a sync target)`);
-      } else if (onDisk.kind !== 'missing') {
-        console.warn(
-          `  WARN   ${record.sync_name}: ${path} changed since it was written; preserved`,
-        );
+  // A target that threw may have skipped `retained.add`, so its file must not look orphaned.
+  // An empty or failed inventory must never authorize removing files either.
+  const failures = settled.filter((r) => r.status === 'rejected');
+  try {
+    if (!failures.length && discovered && Object.keys(discovered).length) {
+      for (const [path, record] of Object.entries(state.outputs)) {
+        if (record.shell !== shell || dirname(path) !== outputDir || retained.has(path)) {
+          continue;
+        }
+        delete state.outputs[path];
+        if (record.provider !== 'generated') {
+          continue;
+        }
+        const onDisk = await inspectOutput(path);
+        if (owns(record, onDisk)) {
+          await Deno.remove(path);
+          counts.removed++;
+          log(
+            `  remove ${record.sync_name} → ${shell}/${basename(path)} (no longer a sync target)`,
+          );
+        } else if (onDisk.kind !== 'missing') {
+          console.warn(
+            `  WARN   ${record.sync_name}: ${shell}/${
+              basename(path)
+            } changed since it was written; preserved`,
+          );
+        }
       }
     }
+  } finally {
+    // Always persist: files written this run must stay recognizable as ours next run.
+    await saveState(state, statePath);
   }
 
-  await saveState(state, statePath);
+  if (failures.length) {
+    for (const { reason } of failures.slice(1)) {
+      console.warn(`  WARN   ${reason}`);
+    }
+    throw failures[0]!.reason;
+  }
 
   const parts = [
     `updated: ${counts.updated}`,
     `skipped: ${counts.skipped}`,
-    `native: ${counts.native}`,
+    `packslip: ${counts.packslip}`,
   ];
-  if (counts.removed) {
-    parts.push(`removed: ${counts.removed}`);
-  }
-  if (counts.failed) {
-    parts.push(`failed: ${counts.failed}`);
-  }
-  if (attention.length) {
-    parts.push(`needs-attention: ${attention.length}`);
-  }
-  if (pending.length) {
-    parts.push(`pending: ${pending.length}`);
+  for (const key of ['removed', 'preserved', 'failed'] as const) {
+    if (counts[key]) {
+      parts.push(`${key}: ${counts[key]}`);
+    }
   }
   if (!quiet || verbose) {
     console.log(`sync-completions: ${parts.join(', ')}`);

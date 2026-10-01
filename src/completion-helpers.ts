@@ -1,25 +1,43 @@
 import { join } from 'node:path';
 import type { MiseToolInfo, Shell } from './shared.ts';
 
-/** `name@version` for a discovered install, so generation runs that exact version. */
-export const miseToolSpec = (tool: MiseToolInfo): string =>
-  tool.install_path && tool.version ? `${tool.name}@${tool.version}` : tool.name;
+/** `tool@version` for a discovered install, so generation runs that exact version. */
+export const miseToolSpec = (tool: MiseToolInfo): string => {
+  const name = tool.provider ?? tool.name;
+  return tool.install_path && tool.version ? `${name}@${tool.version}` : name;
+};
 
-export const runMiseCommand = async (
+/**
+ * Runs `mise` and returns its stdout, or `null` if it failed or printed nothing. The working
+ * directory is `/` because mise resolves versions from the project config above the cwd, and
+ * `mise x`/`mise completion` have no global-only mode: `/` has no config above it, so only global
+ * config applies. Never throws.
+ */
+export const runMise = async (args: string[]): Promise<string | null> => {
+  try {
+    const result = await new Deno.Command('mise', {
+      args,
+      stdout: 'piped',
+      stderr: 'null',
+      cwd: '/',
+    }).output();
+    const out = new TextDecoder().decode(result.stdout);
+    return result.success && out.trim() ? out : null;
+  } catch {
+    return null;
+  }
+};
+
+export const runMiseCommand = (
   miseTool: string | MiseToolInfo,
   command: string[],
-): Promise<string | null> => {
-  const spec = typeof miseTool === 'string' ? miseTool : miseToolSpec(miseTool);
-  const result = await new Deno.Command('mise', {
-    args: ['x', spec, '--', ...command],
-    stdout: 'piped',
-    stderr: 'null',
-    // `mise x` has no --global flag; `/` has no project config above it, so only global config applies.
-    cwd: '/',
-  }).output();
-  const output = new TextDecoder().decode(result.stdout);
-  return result.success && output.trim() ? output : null;
-};
+): Promise<string | null> =>
+  runMise([
+    'x',
+    typeof miseTool === 'string' ? miseTool : miseToolSpec(miseTool),
+    '--',
+    ...command,
+  ]);
 
 const matchGlobPrefix = (name: string, pattern: string): boolean => {
   const prefix = pattern.replace(/\*.*$/, '');

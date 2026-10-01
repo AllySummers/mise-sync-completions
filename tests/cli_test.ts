@@ -2,14 +2,20 @@ import assert from 'node:assert/strict';
 import { dirname, join } from 'node:path';
 import { cli } from '../src/cli.ts';
 import type { CLIOptions, Shell } from '../src/shared.ts';
-import { assetCompletions, writeInstall } from './fixtures.ts';
 
+/** A fake `mise`: logs every call with its cwd, and prints recognizable output. */
 const FAKE_MISE = `#!/bin/sh
 printf '%s|%s\\n' "$PWD" "$*" >> "$FAKE_MISE_LOG"
 case "$1" in
-  --version) echo "\${FAKE_MISE_VERSION:-2026.9.17} macos-arm64 (2026-09-29)" ;;
+  --version) echo "2026.9.17 macos-arm64 (2026-09-29)" ;;
   ls) cat "$FAKE_MISE_LS" ;;
+  completion)
+    # completion <shell> --tool <command>: packslip completion only if the test listed "<shell> <command>".
+    grep -qx "$2 $4" "$FAKE_MISE_PACKSLIP" 2>/dev/null || exit 1
+    printf '# packslip %s %s\\n' "$4" "$2"
+    ;;
   x)
+    [ -n "$FAKE_MISE_FAIL" ] && exit 1
     shift
     specs=''
     while [ "$#" -gt 0 ] && [ "$1" != '--' ]; do specs="$specs $1"; shift; done
@@ -46,9 +52,10 @@ const harness = async () => {
     PATH: `${bin}:${Deno.env.get('PATH')}`,
     FAKE_MISE_LOG: join(root, 'mise.log'),
     FAKE_MISE_LS: join(root, 'ls.json'),
+    FAKE_MISE_PACKSLIP: join(root, 'packslip.txt'),
   };
   const saved = Object.fromEntries(
-    [...Object.keys(env), 'FAKE_MISE_VERSION'].map((k) => [
+    [...Object.keys(env), 'FAKE_MISE_FAIL'].map((k) => [
       k,
       Deno.env.get(k),
     ]),
@@ -87,6 +94,20 @@ const harness = async () => {
         }
       }
       await Deno.writeTextFile(env.FAKE_MISE_LS!, JSON.stringify(json));
+    },
+
+    /**
+     * Makes an installed tool a packslip install whose `commands` mise completes natively in every
+     * shell: the statement file is the marker the task looks for, the list is what the fake
+     * `mise completion --tool` accepts.
+     */
+    async packslip(name: string, version: string, commands: string[] = [name]) {
+      const dir = join(h.install(name.replaceAll('/', '-')), version);
+      await Deno.writeTextFile(join(dir, '.mise-packslip.json'), '{}');
+      const lines = commands.flatMap((c) =>
+        (['zsh', 'bash', 'fish'] as const).map((s) => `${s} ${c}`)
+      );
+      await Deno.writeTextFile(env.FAKE_MISE_PACKSLIP!, lines.join('\n') + '\n', { append: true });
     },
 
     /** Output lines printed during the run. */
@@ -146,17 +167,14 @@ const test = (name: string, fn: (h: Harness) => Promise<void>) =>
     }
   });
 
-const nativeHk = (h: Harness, version = '2.4.0') =>
-  writeInstall(join(h.install('hk'), version), { bins: ['hk'], ...assetCompletions('hk') });
-
-test('native packslip installs skip generation in every shell', async (h) => {
+test('packslip installs skip generation in every shell', async (h) => {
   await h.tools({ hk: { version: '2.4.0' }, deno: { version: '2.1.0' } });
-  await nativeHk(h);
+  await h.packslip('hk', '2.4.0');
   for (const shell of ['zsh', 'bash', 'fish'] as const) {
-    assert.match(await h.run({ shell }), /native: 1/);
+    assert.match(await h.run({ shell }), /packslip: 1/);
   }
   const calls = (await h.calls()).map((c) => c.args);
-  assert.ok(!calls.some((c) => c.includes('-- hk ')), 'no legacy hk generator ran');
+  assert.ok(!calls.some((c) => c.includes('-- hk ')), 'no generated hk file');
   assert.ok(calls.includes('x deno@2.1.0 -- deno completions zsh'));
   assert.equal(await exists(h.file('zsh', '_hk')), false);
   assert.equal(await exists(h.file('fish', 'hk.fish')), false);
@@ -179,71 +197,62 @@ test('shells, destinations, and missing files are tracked independently', async 
   assert.ok(await exists(h.file('zsh', '_deno')));
 });
 
-test('provider is reconsidered before the cache; --force never overrides native', async (h) => {
+test('provider is reconsidered before the cache; --force never overrides packslip', async (h) => {
   await h.tools({ hk: { version: '2.4.0' }, usage: { version: '6.12.0' } });
   await h.run();
   const calls = (await h.calls()).map((c) => c.args);
   assert.ok(calls.includes('x hk@2.4.0 usage@6.12.0 -- hk completion zsh'));
   assert.ok(await exists(h.file('zsh', '_hk')));
 
-  await nativeHk(h);
+  await h.packslip('hk', '2.4.0');
   const out = await h.run({ force: true });
   assert.match(out, /retire hk/);
   assert.match(out, /removed: 1/);
   assert.ok(!(await h.calls()).some((c) => c.args.includes('-- hk ')));
   assert.equal(await exists(h.file('zsh', '_hk')), false);
-  assert.equal((await h.state()).outputs[h.file('zsh', '_hk')].provider, 'native');
+  assert.equal((await h.state()).outputs[h.file('zsh', '_hk')].provider, 'packslip');
 
   await Deno.remove(join(h.install('hk'), '2.4.0', '.mise-packslip.json'));
   await h.run();
   assert.ok(await exists(h.file('zsh', '_hk')), 'switching back regenerates');
 });
 
-test('an edited legacy file is preserved at handoff', async (h) => {
+test('an edited generated file is preserved at handoff', async (h) => {
   await h.tools({ hk: { version: '2.4.0' } });
   await h.run();
   await Deno.writeTextFile(h.file('zsh', '_hk'), '# edited\n');
-  await nativeHk(h);
+  await h.packslip('hk', '2.4.0');
   assert.match(await h.run(), /_hk changed since it was written; preserved/);
   assert.equal(await Deno.readTextFile(h.file('zsh', '_hk')), '# edited\n');
 });
 
-test('needs-attention keeps the legacy completion', async (h) => {
+test('a packslip install mise cannot complete keeps the fallback', async (h) => {
   await h.tools({ hk: { version: '2.4.0' } });
-  await writeInstall(join(h.install('hk'), '2.4.0'), {
-    bins: ['hk'],
-    resources: assetCompletions('hk').resources,
-  });
+  // A packslip install, but the (fake) mise has no completion for it: a man-page-only release,
+  // a missing resource, or a mise too old to know `--tool` all look like this.
+  await Deno.writeTextFile(join(h.install('hk'), '2.4.0', '.mise-packslip.json'), '{}');
   const out = await h.run();
-  assert.match(out, /packslip declares a zsh completion .* keeping legacy completion/);
-  assert.match(out, /needs-attention: 1/);
-  assert.ok(await exists(h.file('zsh', '_hk')));
+  assert.match(out, /wrote {2}hk@2\.4\.0/);
+  assert.ok((await h.calls()).some((c) => c.args === 'completion zsh --tool hk'));
+  assert.equal((await h.state()).outputs[h.file('zsh', '_hk')].provider, 'generated');
 });
 
-test('declared generators stay pending and keep the legacy completion', async (h) => {
-  await h.tools({ hk: { version: '2.4.0' } });
-  await writeInstall(join(h.install('hk'), '2.4.0'), {
-    bins: ['hk'],
-    resources: [{ kind: 'completion', shells: ['zsh', 'bash', 'fish'], exec: ['hk', '{shell}'] }],
-  });
-  assert.match(await h.run(), /pending: 1/);
-  assert.ok(await exists(h.file('zsh', '_hk')));
-  assert.equal((await h.state()).outputs[h.file('zsh', '_hk')].provider, 'legacy');
+test('tools without a packslip statement are never probed', async (h) => {
+  await h.tools({ deno: { version: '2.1.0' } });
+  await h.run();
+  assert.ok(!(await h.calls()).some((c) => c.args.startsWith('completion')));
 });
 
 test('files this task never wrote are left alone at handoff', async (h) => {
   await h.tools({ hk: { version: '2.4.0' }, usage: { version: '6.12.0' } });
-  await nativeHk(h);
-  await writeInstall(join(h.install('usage'), '6.12.0'), {
-    bins: ['usage'],
-    ...assetCompletions('usage'),
-  });
+  await h.packslip('hk', '2.4.0');
+  await h.packslip('usage', '6.12.0');
   await Deno.mkdir(h.out('zsh'), { recursive: true });
   await Deno.writeTextFile(h.file('zsh', '_hk'), '# from elsewhere\n');
   await Deno.writeTextFile(join(h.root, 'usage-target'), '# linked\n');
   await Deno.symlink(join(h.root, 'usage-target'), h.file('zsh', '_usage'));
 
-  assert.match(await h.run(), /native: 2/);
+  assert.match(await h.run(), /packslip: 2/);
   assert.equal(await Deno.readTextFile(h.file('zsh', '_hk')), '# from elsewhere\n');
   assert.ok(await exists(h.file('zsh', '_usage')));
 });
@@ -333,11 +342,117 @@ test('concurrent runs keep every record', async (h) => {
   );
 });
 
-test('mise older than the tested baseline is refused before anything is written', async (h) => {
+test('fallback generation never overwrites a file it did not write', async (h) => {
   await h.tools({ deno: { version: '2.1.0' } });
-  Deno.env.set('FAKE_MISE_VERSION', '2026.9.2');
-  await assert.rejects(h.run(), /older than 2026\.9\.17.*; upgrade mise$/);
-  assert.equal(await exists(h.out('zsh')), false);
+  await Deno.mkdir(h.out('zsh'), { recursive: true });
+  await Deno.writeTextFile(h.file('zsh', '_deno'), '# foreign\n');
+  const out = await h.run({ force: true });
+  assert.match(out, /deno: zsh\/_deno was not written by this task; preserved/);
+  assert.match(out, /preserved: 1/);
+  assert.equal(await Deno.readTextFile(h.file('zsh', '_deno')), '# foreign\n');
+  assert.equal((await h.state()).outputs[h.file('zsh', '_deno')], undefined);
+});
+
+test('an edited fallback file is kept when the tool is upgraded', async (h) => {
+  await h.tools({ deno: { version: '2.1.0' } });
+  await h.run();
+  await Deno.writeTextFile(h.file('zsh', '_deno'), '# edited\n');
+  await h.tools({ deno: { version: '2.2.0' } });
+  assert.match(await h.run(), /zsh\/_deno changed since it was written; preserved/);
+  assert.equal(await Deno.readTextFile(h.file('zsh', '_deno')), '# edited\n');
+  assert.equal((await h.state()).outputs[h.file('zsh', '_deno')].version, '2.1.0');
+});
+
+test('a failed generation keeps the previous file and record', async (h) => {
+  await h.tools({ deno: { version: '2.1.0' } });
+  await h.run();
+  await h.tools({ deno: { version: '2.2.0' } });
+  Deno.env.set('FAKE_MISE_FAIL', '1');
+  assert.match(await h.run(), /failed: \d/);
+  assert.match(await Deno.readTextFile(h.file('zsh', '_deno')), /deno@2\.1\.0/);
+  assert.equal((await h.state()).outputs[h.file('zsh', '_deno')].version, '2.1.0');
+});
+
+test('upgrading a required tool regenerates the files that run under it', async (h) => {
+  await h.tools({ hk: { version: '2.4.0' }, usage: { version: '6.12.0' } });
+  await h.run();
+  await h.tools({ hk: { version: '2.4.0' }, usage: { version: '6.13.0' } });
+  assert.match(await h.run(), /wrote {2}hk@2\.4\.0/);
+  assert.match(await Deno.readTextFile(h.file('zsh', '_hk')), /usage@6\.13\.0/);
+});
+
+test('providedBy entries run under the providing tool, and hand off per executable', async (h) => {
+  await h.tools({ uv: { version: '0.5.0' } });
+  await h.run();
+  const calls = await h.calls();
+  assert.ok(calls.some((c) => c.args === 'x uv@0.5.0 -- uvx --generate-shell-completion zsh'));
+  assert.ok(await exists(h.file('zsh', '_uvx')));
+
+  await h.packslip('uv', '0.5.0', ['uvx']);
+  assert.match(await h.run(), /retire uvx/);
+  assert.equal(await exists(h.file('zsh', '_uvx')), false);
+  assert.ok(await exists(h.file('zsh', '_uv')), 'uv itself is not covered, so it stays');
+});
+
+test('handler entries run the pinned version outside the caller project', async (h) => {
+  await h.tools({ 'npm:neon': { version: '1.2.3' } });
+  await h.run();
+  const call = (await h.calls()).find((c) => c.args.startsWith('x npm:neon@'));
+  assert.equal(call?.args, 'x npm:neon@1.2.3 -- neon completion');
+  assert.equal(call?.cwd, '/');
+  assert.ok(await exists(h.file('zsh', '_neon')));
+});
+
+test('user registry changes: disabled HTTP keeps files, a dropped shell removes them', async (h) => {
+  await h.tools({ deno: { version: '2.1.0' }, jj: { version: '0.30.0' } });
+  const registry = (name: string, body: string) =>
+    Deno.writeTextFile(
+      join(h.root, name),
+      `export const tools = { jj: { source: 'http', handler: () => '#compdef jj\\n' }, ${body} };`,
+    ).then(() => join(h.root, name));
+
+  await h.run({ registryPath: await registry('one.ts', '') });
+  assert.ok(await exists(h.file('zsh', '_jj')));
+
+  const http = await h.run({ registryPath: join(h.root, 'one.ts'), enableHttpCompletions: false });
+  assert.match(http, /no-cmd jj/);
+  assert.ok(await exists(h.file('zsh', '_jj')), 'turning HTTP off is not removal');
+  assert.ok((await h.state()).outputs[h.file('zsh', '_jj')]);
+
+  // Unlike the paths above, an entry that no longer supports the shell is no longer a target.
+  const out = await h.run({
+    registryPath: await registry('two.ts', "deno: { bash: 'deno completions bash' }"),
+  });
+  assert.match(out, /remove deno/);
+  assert.equal(await exists(h.file('zsh', '_deno')), false);
+});
+
+Deno.test({
+  name: 'an I/O failure surfaces, leaves valid state, and the next run recovers',
+  ignore: Deno.build.os === 'windows',
+  fn: async () => {
+    const h = await harness();
+    try {
+      await h.tools({ deno: { version: '2.1.0' } });
+      await h.run();
+      await h.tools({ deno: { version: '2.2.0' } });
+      await Deno.chmod(h.out('zsh'), 0o555);
+      try {
+        const probe = join(h.out('zsh'), 'probe');
+        if (await Deno.writeTextFile(probe, '').then(() => true, () => false)) {
+          return; // permissions are not enforced here (running as root)
+        }
+        await assert.rejects(h.run());
+      } finally {
+        await Deno.chmod(h.out('zsh'), 0o755);
+      }
+      // The failed run neither lost the record nor left the lock held.
+      assert.equal((await h.state()).outputs[h.file('zsh', '_deno')].version, '2.1.0');
+      assert.match(await h.run(), /wrote {2}deno@2\.2\.0/);
+    } finally {
+      await h.cleanup();
+    }
+  },
 });
 
 test('state that is not schema 2 is ignored and replaced', async (h) => {

@@ -55,7 +55,10 @@ export interface CLIOptions {
 }
 
 export interface MiseToolInfo {
+  /** The command name for registry commands and handlers; the mise tool name for discovered tools. */
   name: string;
+  /** The mise tool that provides `name`, when that differs (`providedBy` entries). */
+  provider?: string;
   version: string;
   requested_version?: string;
   install_path: string;
