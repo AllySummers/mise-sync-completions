@@ -164,6 +164,7 @@ export const tools: Record<string, RegistryEntry> = {
     completionName: 'hishtory',
   },
   hugo: standard,
+  tombi: standard,
   jules: standard,
   lazygit: standard,
   lefthook: standard,
