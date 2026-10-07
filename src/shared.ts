@@ -52,6 +52,8 @@ export interface CLIOptions {
   enableHttpCompletions?: boolean;
   enableBundledCompletions?: boolean;
   disabledTools?: string[];
+  /** How long to wait for the state lock before failing. Defaults to two minutes. */
+  lockTimeoutMs?: number;
 }
 
 export interface MiseToolInfo {

@@ -75,13 +75,8 @@ export const tools: Record<string, RegistryEntry> = {
   kubeseal: standard,
   linkerd: standard,
   nova: standard,
-  // mise's registry lists this as `cilium-hubble`, but the aqua backend installed directly
-  // (`aqua:cilium/hubble`) is keyed by its full name. The binary is `hubble` either way.
-  hubble: {
-    ...standardCommands('hubble'),
-    aliases: ['cilium-hubble', 'aqua:cilium/hubble'],
-    completionName: 'hubble',
-  },
+  // mise's registry lists this as `cilium-hubble`; the binary is `hubble`.
+  hubble: standard,
   skaffold: standard,
   stern: standard,
   talosctl: standard,
@@ -121,7 +116,6 @@ export const tools: Record<string, RegistryEntry> = {
   doctl: standard,
   railway: {
     ...standardCommands('railway'),
-    aliases: ['github:railwayapp/cli'],
     completionName: 'railway',
   },
   supabase: completionsFlag,
@@ -194,7 +188,6 @@ export const tools: Record<string, RegistryEntry> = {
     fish: 'bun completions',
   },
   npm: {
-    aliases: ['aqua:npm/cli'],
     completionName: 'npm',
     zsh: 'npm completion',
     bash: 'npm completion',
@@ -236,7 +229,6 @@ export const tools: Record<string, RegistryEntry> = {
   },
   gt: {
     aliases: [
-      'npm:@withgraphite/graphite-cli',
       'github:withgraphite/homebrew-tap',
     ],
     completionName: 'gt',

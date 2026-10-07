@@ -5,10 +5,11 @@ import type { CLIOptions, Shell } from '../src/shared.ts';
 
 /** A fake `mise`: logs every call with its cwd, and prints recognizable output. */
 const FAKE_MISE = `#!/bin/sh
-printf '%s|%s\\n' "$PWD" "$*" >> "$FAKE_MISE_LOG"
+printf '%s|%s|%s\\n' "$PWD" "\${MISE_NO_HOOKS:-unset}" "$*" >> "$FAKE_MISE_LOG"
 case "$1" in
   --version) echo "2026.9.17 macos-arm64 (2026-09-29)" ;;
   ls) cat "$FAKE_MISE_LS" ;;
+  registry) cat "$FAKE_MISE_REGISTRY" ;;
   completion)
     # completion <shell> --tool <command>: packslip completion only if the test listed "<shell> <command>".
     grep -qx "$2 $4" "$FAKE_MISE_PACKSLIP" 2>/dev/null || exit 1
@@ -52,8 +53,18 @@ const harness = async () => {
     PATH: `${bin}:${Deno.env.get('PATH')}`,
     FAKE_MISE_LOG: join(root, 'mise.log'),
     FAKE_MISE_LS: join(root, 'ls.json'),
+    FAKE_MISE_REGISTRY: join(root, 'registry.json'),
     FAKE_MISE_PACKSLIP: join(root, 'packslip.txt'),
   };
+  // The slice of `mise registry --json` the tests rely on.
+  await Deno.writeTextFile(
+    env.FAKE_MISE_REGISTRY!,
+    JSON.stringify([
+      { short: 'cilium-hubble', backends: ['aqua:cilium/hubble'], bins: ['hubble'] },
+      { short: 'railway', backends: ['github:railwayapp/cli[exe=railway]'], bins: ['railway'] },
+      { short: 'graphite', backends: ['npm:@withgraphite/graphite-cli'], bins: ['gt'] },
+    ]),
+  );
   const saved = Object.fromEntries(
     [...Object.keys(env), 'FAKE_MISE_FAIL'].map((k) => [
       k,
@@ -126,12 +137,12 @@ const harness = async () => {
     },
 
     /** mise invocations since the last call, as `{ cwd, args }`. */
-    async calls(): Promise<{ cwd: string; args: string }[]> {
+    async calls(): Promise<{ cwd: string; hooks: string; args: string }[]> {
       const text = await Deno.readTextFile(env.FAKE_MISE_LOG!).catch(() => '');
       await Deno.writeTextFile(env.FAKE_MISE_LOG!, '');
       return text.split('\n').filter(Boolean).map((line) => {
-        const [cwd, args] = line.split('|');
-        return { cwd: cwd!, args: args ?? '' };
+        const [cwd, hooks, args] = line.split('|');
+        return { cwd: cwd!, hooks: hooks!, args: args ?? '' };
       });
     },
 
@@ -482,6 +493,69 @@ test('a backend-qualified tool writes under its binary name', async (h) => {
   await h.tools({ 'cargo:forgejo-cli': { version: '0.4.0' } });
   await h.run({ shell: 'fish' });
   assert.ok(await exists(h.file('fish', 'fj.fish')));
+});
+
+test('a backend install is matched through the mise registry without an alias', async (h) => {
+  await h.tools({ 'npm:@withgraphite/graphite-cli': { version: '1.7.0' } });
+  await h.run();
+  assert.ok(
+    (await h.calls()).some((c) =>
+      c.args === 'x npm:@withgraphite/graphite-cli@1.7.0 -- gt completion'
+    ),
+  );
+  assert.ok(await exists(h.file('zsh', '_gt')));
+
+  // Not in mise's registry: the last path segment must never be guessed as a tool name.
+  await h.tools({ 'github:someone/task': { version: '1.0.0' }, deno: { version: '2.1.0' } });
+  await h.run();
+  assert.equal(await exists(h.file('zsh', '_task')), false);
+});
+
+test("a plain install is matched through its registry short name's binary", async (h) => {
+  await h.tools({ 'cilium-hubble': { version: '1.17.0' } });
+  await h.run();
+  assert.ok(
+    (await h.calls()).some((c) => c.args === 'x cilium-hubble@1.17.0 -- hubble completion zsh'),
+  );
+  assert.ok(await exists(h.file('zsh', '_hubble')));
+  assert.equal((await h.state()).outputs[h.file('zsh', '_hubble')].sync_name, 'hubble');
+});
+
+test('every mise subprocess runs with hooks disabled', async (h) => {
+  // A postinstall hook that re-runs this task would wait on the lock this run holds.
+  await h.tools({
+    deno: { version: '2.1.0' },
+    'npm:@withgraphite/graphite-cli': { version: '1.7.0' },
+  });
+  await h.packslip('deno', '2.1.0');
+  await h.run({ force: true });
+  const calls = await h.calls();
+  const kinds = new Set(calls.map((c) => c.args.split(' ')[0]));
+  // `--version`, `ls`, `registry`, `completion --tool` (packslip check) and `x` (generation).
+  for (const kind of ['--version', 'ls', 'registry', 'completion', 'x']) {
+    assert.ok(kinds.has(kind), `expected a mise ${kind} call`);
+  }
+  for (const call of calls) {
+    assert.equal(call.hooks, '1', `hooks enabled for: mise ${call.args}`);
+  }
+});
+
+test('a held state lock fails with a clear error instead of hanging', async (h) => {
+  await h.tools({ deno: { version: '2.1.0' } });
+  await Deno.mkdir(dirname(h.statePath), { recursive: true });
+  const held = await Deno.open(`${h.statePath}.lock`, { create: true, write: true });
+  await held.lock(true);
+  try {
+    const start = Date.now();
+    await assert.rejects(h.run({ lockTimeoutMs: 300 }), /timed out after 0\.3s waiting for/);
+    assert.ok(Date.now() - start < 5_000);
+    assert.deepEqual(await h.calls(), []);
+  } finally {
+    held.close();
+  }
+  // Once released, a run proceeds normally.
+  await h.run();
+  assert.ok(await exists(h.file('zsh', '_deno')));
 });
 
 test('trash-cli completes each of its commands, in zsh and bash only', async (h) => {

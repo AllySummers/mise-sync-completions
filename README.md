@@ -215,7 +215,18 @@ records each output by absolute path, with its shell, executable, tool,
 version, install path, provider, and content hash, so runs for different
 shells or output directories never mask one another. Runs that share the file
 take a lock (`.state.json.lock`), so concurrent postinstall and manual runs are
-serialized.
+serialized. A run waits up to two minutes for the lock, then fails with an
+error instead of hanging.
+
+### Hooks
+
+Generating a completion runs `mise x <tool>@<version> -- <tool> completion …`,
+which can fire a `postinstall` hook even for an installed tool (seen with
+aube-based `npm:` installs). With the hook above, that would start a second
+sync inside the first, which then waits on the lock the first holds, so both
+hang. Every `mise` subprocess this task spawns (`x`, `ls`, `registry`,
+`completion --tool`, `--version`) therefore runs with `MISE_NO_HOOKS=1`, so
+none of them run your hooks.
 
 ## Checking packslip completions
 

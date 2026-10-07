@@ -104,11 +104,28 @@ const saveState = async (s: State, statePath: string): Promise<void> => {
   await writeAtomic(statePath, `${JSON.stringify(s, null, 2)}\n`);
 };
 
-/** Serializes whole runs (postinstall hooks, manual runs) that share one state file. */
-const lockState = async (statePath: string): Promise<Deno.FsFile> => {
+const LOCK_TIMEOUT_MS = 120_000;
+const LOCK_POLL_MS = 100;
+
+/**
+ * Serializes whole runs (postinstall hooks, manual runs) that share one state file. Waits for a
+ * concurrent run, but gives up after `timeoutMs` rather than hanging forever behind a stuck one.
+ */
+const lockState = async (statePath: string, timeoutMs = LOCK_TIMEOUT_MS): Promise<Deno.FsFile> => {
   await Deno.mkdir(dirname(statePath), { recursive: true });
-  const file = await Deno.open(`${statePath}.lock`, { create: true, write: true });
-  await file.lock(true);
+  const lockPath = `${statePath}.lock`;
+  const file = await Deno.open(lockPath, { create: true, write: true });
+  const deadline = Date.now() + timeoutMs;
+  while (!await file.tryLock(true)) {
+    if (Date.now() >= deadline) {
+      file.close();
+      throw new Error(
+        `timed out after ${timeoutMs / 1000}s waiting for ${lockPath}; another sync-completions ` +
+          'run holds it. If none is running, delete the lock file.',
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_MS));
+  }
   return file;
 };
 
@@ -167,11 +184,63 @@ const indexRegistry = (tools: Record<string, RegistryEntry>): RegistryIndex => {
   return { byName, providedBy };
 };
 
+interface MiseRegistryRecord {
+  short: string;
+  backends?: string[];
+  bins?: string[];
+  aliases?: string[];
+}
+
+/** mise's own registry, or `[]` when it can't be read. Never throws. */
+const loadMiseRegistry = async (): Promise<MiseRegistryRecord[]> => {
+  const out = await runMise(['registry', '--json']);
+  if (!out) {
+    return [];
+  }
+  try {
+    const records = JSON.parse(out);
+    return Array.isArray(records) ? records : [];
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * Maps installs with no registry entry of their own to the names mise's registry knows the tool
+ * by, so they can reuse that entry. An install matches a record by its short name, an alias, or
+ * (with options stripped) one of its backends, e.g. `aqua:cilium/hubble` or `cilium-hubble`. The
+ * candidates are the record's short name, binaries, then aliases, keeping those with an entry.
+ */
+const resolveRegistryNames = (
+  installedNames: string[],
+  records: MiseRegistryRecord[],
+  index: RegistryIndex,
+): Record<string, string[]> => {
+  const wanted = new Set(installedNames.filter((name) => !index.byName[name]));
+  const names: Record<string, string[]> = {};
+  if (!wanted.size) {
+    return names;
+  }
+  for (const { short, backends = [], bins = [], aliases = [] } of records) {
+    const known = [short, ...aliases, ...backends.map((b) => b.replace(/\[.*$/, ''))];
+    for (const name of wanted.intersection(new Set(known))) {
+      const list = names[name] ??= [];
+      for (const candidate of [short, ...bins, ...aliases]) {
+        if (index.byName[candidate] && !list.includes(candidate)) {
+          list.push(candidate);
+        }
+      }
+    }
+  }
+  return names;
+};
+
 const buildSyncTargets = (
   installed: Record<string, MiseToolInfo>,
   index: RegistryIndex,
   shell: Shell,
   outputDir: string,
+  backendNames: Record<string, string[]> = {},
 ): SyncTarget[] => {
   const targets: SyncTarget[] = [];
   const target = (syncName: string, info: MiseToolInfo, entry: RegistryEntry): SyncTarget => {
@@ -189,6 +258,14 @@ const buildSyncTargets = (
     const entry = index.byName[name];
     if (entry) {
       targets.push(target(name, { ...info, name }, entry));
+      continue;
+    }
+    // Known to mise's registry (by short name, alias, or backend) under a name we have an entry
+    // for: sync under that name, but keep the installed name in `info` so generation runs the
+    // exact install.
+    const short = backendNames[name]?.at(0);
+    if (short) {
+      targets.push(target(short, { ...info, name }, index.byName[short]!));
     }
   }
 
@@ -209,7 +286,11 @@ const isProvidedBy = (t: SyncTarget): boolean =>
 const compareOwners = (a: SyncTarget, b: SyncTarget): number =>
   Number(a.syncName !== a.completionName) - Number(b.syncName !== b.completionName) ||
   Number(isProvidedBy(a)) - Number(isProvidedBy(b)) ||
+  Number(a.info.name !== a.syncName) - Number(b.info.name !== b.syncName) ||
   (a.syncName < b.syncName ? -1 : a.syncName > b.syncName ? 1 : 0);
+
+/** The name to show for a target: the full backend name when it was matched through one. */
+const label = (t: SyncTarget): string => isProvidedBy(t) ? t.syncName : t.info.name;
 
 const assignOwners = (targets: SyncTarget[]) => {
   const byPath = Map.groupBy(targets, (t) => t.path);
@@ -276,17 +357,22 @@ const supportsShell = (
 
 /** The pinned `tool@version` specs a target's generator runs under: its provider, then `requires`. */
 const generatorSpecs = (
-  { syncName, entry }: SyncTarget,
+  { info, entry }: SyncTarget,
   tools: Record<string, MiseToolInfo>,
 ): string[] => {
-  const provider = typeof entry === 'object' && entry.providedBy ? entry.providedBy : syncName;
+  // `info` is the install providing the command, whatever backend it came from, so it can differ
+  // from the registry name (`syncName`).
+  const provider = info.name;
   const requirements = typeof entry === 'object'
     ? Array.isArray(entry.requires) ? entry.requires : entry.requires ? [entry.requires] : []
     : [];
-  return [provider, ...requirements.filter((name) => name !== provider)].map((name) => {
-    const found = tools[name];
-    return found ? miseToolSpec({ ...found, name }) : name;
-  });
+  return [
+    miseToolSpec(info),
+    ...requirements.filter((name) => name !== provider).map((name) => {
+      const found = tools[name];
+      return found ? miseToolSpec({ ...found, name }) : name;
+    }),
+  ];
 };
 
 const resolveCompletion = async (
@@ -371,7 +457,7 @@ const baseRecord = (t: SyncTarget, shell: Shell, specs: string[]) => ({
 });
 
 export const cli = async (options: CLIOptions): Promise<void> => {
-  const lock = await lockState(options.statePath);
+  const lock = await lockState(options.statePath, options.lockTimeoutMs);
   try {
     await sync(options);
   } finally {
@@ -400,20 +486,22 @@ const sync = async ({
   const disabled = new Set(disabledTools);
   const outputDir = resolve(completionsPath);
 
-  const [state, registry, discovered] = await Promise.all([
+  const [state, registry, discovered, miseRegistry] = await Promise.all([
     readState(statePath),
     loadRegistry(registryPath),
     discoverTools(),
+    loadMiseRegistry(),
   ]);
 
   const tools = { ...discovered };
   await addMiseSelf(tools);
 
+  const backendNames = resolveRegistryNames(Object.keys(tools), miseRegistry, registry);
   const { owners, shadowed } = assignOwners(
-    buildSyncTargets(tools, registry, shell, outputDir),
+    buildSyncTargets(tools, registry, shell, outputDir, backendNames),
   );
   for (const { target, owner } of shadowed) {
-    log(`  shadow ${target.syncName}: ${owner.syncName} owns ${shell}/${basename(owner.path)}`);
+    log(`  shadow ${label(target)}: ${label(owner)} owns ${shell}/${basename(owner.path)}`);
   }
 
   const isDisabled = ({ syncName, completionName, entry }: SyncTarget) => {
@@ -453,73 +541,89 @@ const sync = async ({
     log(`  packslip ${t.syncName}@${t.info.version} (${shell})`);
   };
 
+  /** Run one target's work, logging its elapsed time when verbose. */
+  const timed = async (t: SyncTarget, work: () => Promise<void>) => {
+    const start = performance.now();
+    try {
+      await work();
+    } finally {
+      log(`  time   ${t.syncName} (${shell}): ${(performance.now() - start).toFixed(1)}ms`);
+    }
+  };
+
   const settled = await Promise.allSettled(
-    owners.map(async (t) => {
-      const { syncName, info, entry, path } = t;
-      if (isDisabled(t)) {
-        log(`  disable ${syncName}`);
+    owners.map((t) =>
+      timed(t, async () => {
+        const { syncName, info, entry, path } = t;
+        if (isDisabled(t)) {
+          log(`  disable ${syncName}`);
+          retained.add(path);
+          return;
+        }
+
+        if (await hasPackslipCompletion(info.install_path, t.completionName, shell)) {
+          retained.add(path);
+          await handOff(t);
+          return;
+        }
+
+        if (shouldSkipEntry(entry, enableHttpCompletions, enableBundledCompletions)) {
+          log(`  no-cmd ${syncName} (${shell})`);
+          retained.add(path);
+          return;
+        }
+
+        if (!supportsShell(entry, shell, info)) {
+          log(`  no-shell ${syncName} (${shell})`);
+          return;
+        }
+
         retained.add(path);
-        return;
-      }
+        const specs = generatorSpecs(t, tools);
+        const record = state.outputs[path];
+        const onDisk = await inspectOutput(path);
+        if (!force && isCacheHit(record, t, specs, onDisk)) {
+          log(`  skip   ${syncName}@${info.version}`);
+          counts.skipped++;
+          return;
+        }
+        // Only overwrite what this task wrote and nobody has touched since.
+        if (onDisk.kind !== 'missing' && !owns(record, onDisk)) {
+          const why = record?.provider === 'generated'
+            ? 'changed since it was written'
+            : 'was not written by this task';
+          console.warn(`  WARN   ${syncName}: ${shell}/${basename(path)} ${why}; preserved`);
+          counts.preserved++;
+          return;
+        }
 
-      if (await hasPackslipCompletion(info.install_path, t.completionName, shell)) {
-        retained.add(path);
-        await handOff(t);
-        return;
-      }
+        let content: string | null;
+        try {
+          content = await resolveCompletion(t, shell, specs);
+        } catch (error) {
+          return fail(syncName, `  error  ${syncName} registry entry (${shell}): ${error}`);
+        }
 
-      if (shouldSkipEntry(entry, enableHttpCompletions, enableBundledCompletions)) {
-        log(`  no-cmd ${syncName} (${shell})`);
-        retained.add(path);
-        return;
-      }
+        if (content === null) {
+          return fail(syncName);
+        }
 
-      if (!supportsShell(entry, shell, info)) {
-        log(`  no-shell ${syncName} (${shell})`);
-        return;
-      }
+        if (!content.trim()) {
+          return fail(syncName, false);
+        }
 
-      retained.add(path);
-      const specs = generatorSpecs(t, tools);
-      const record = state.outputs[path];
-      const onDisk = await inspectOutput(path);
-      if (!force && isCacheHit(record, t, specs, onDisk)) {
-        log(`  skip   ${syncName}@${info.version}`);
-        counts.skipped++;
-        return;
-      }
-      // Only overwrite what this task wrote and nobody has touched since.
-      if (onDisk.kind !== 'missing' && !owns(record, onDisk)) {
-        const why = record?.provider === 'generated'
-          ? 'changed since it was written'
-          : 'was not written by this task';
-        console.warn(`  WARN   ${syncName}: ${shell}/${basename(path)} ${why}; preserved`);
-        counts.preserved++;
-        return;
-      }
-
-      let content: string | null;
-      try {
-        content = await resolveCompletion(t, shell, specs);
-      } catch (error) {
-        return fail(syncName, `  error  ${syncName} registry entry (${shell}): ${error}`);
-      }
-
-      if (content === null) {
-        return fail(syncName);
-      }
-
-      if (!content.trim()) {
-        return fail(syncName, false);
-      }
-
-      const bytes = new TextEncoder().encode(content);
-      const hash = await sha256(bytes);
-      await writeAtomic(path, bytes);
-      state.outputs[path] = { ...baseRecord(t, shell, specs), provider: 'generated', sha256: hash };
-      log(`  wrote  ${syncName}@${info.version} → ${shell}/${basename(path)}`);
-      counts.updated++;
-    }),
+        const bytes = new TextEncoder().encode(content);
+        const hash = await sha256(bytes);
+        await writeAtomic(path, bytes);
+        state.outputs[path] = {
+          ...baseRecord(t, shell, specs),
+          provider: 'generated',
+          sha256: hash,
+        };
+        log(`  wrote  ${syncName}@${info.version} → ${shell}/${basename(path)}`);
+        counts.updated++;
+      })
+    ),
   );
 
   // A target that threw may have skipped `retained.add`, so its file must not look orphaned.

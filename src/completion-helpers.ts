@@ -13,11 +13,16 @@ export const miseToolSpec = (tool: MiseToolInfo): string => {
  * directory is `/` because mise resolves versions from the project config above the cwd, and
  * `mise x`/`mise completion` have no global-only mode: `/` has no config above it, so only global
  * config applies. Never throws.
+ *
+ * Hooks are disabled for every call: `mise x` can fire a `postinstall` hook (e.g. for aube-based
+ * npm installs) even for an installed tool, and that hook typically runs this task again, which
+ * would then wait on the state lock this run holds. This is the only place mise is spawned.
  */
 export const runMise = async (args: string[]): Promise<string | null> => {
   try {
     const result = await new Deno.Command('mise', {
       args,
+      env: { MISE_NO_HOOKS: '1' },
       stdout: 'piped',
       stderr: 'null',
       cwd: '/',
