@@ -142,6 +142,7 @@ export const tools: Record<string, RegistryEntry> = {
   dagger: standard,
   doggo: completions,
   dyff: standard,
+  entire: standard,
   ghorg: standard,
   gitleaks: standard,
   glow: standard,
